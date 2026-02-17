@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.backends._legacy:_Backend"
+
+[project]
+name = "tolerance-stack-3d"
+version = "0.1.0"
+description = "3D tolerance stack analysis with Worst-Case, RSS, and Monte Carlo methods"
+requires-python = ">=3.9"
+dependencies = [
+    "numpy>=1.24",
+    "matplotlib>=3.7",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=7.0"]
+
+[project.scripts]
+tolstack = "tolerance_stack.cli:main"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

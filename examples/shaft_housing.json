@@ -1,0 +1,87 @@
+{
+  "name": "Shaft-Housing Assembly",
+  "description": "Gap between shaft end and housing inner wall",
+  "closure_direction": [
+    1.0,
+    0.0,
+    0.0
+  ],
+  "gap_nominal": null,
+  "contributors": [
+    {
+      "name": "Housing bore depth",
+      "nominal": 50.0,
+      "plus_tol": 0.1,
+      "minus_tol": 0.1,
+      "direction": [
+        1.0,
+        0.0,
+        0.0
+      ],
+      "sign": 1,
+      "distribution": "normal",
+      "contributor_type": "linear",
+      "sigma": 3.0
+    },
+    {
+      "name": "Shaft length",
+      "nominal": 45.0,
+      "plus_tol": 0.05,
+      "minus_tol": 0.05,
+      "direction": [
+        1.0,
+        0.0,
+        0.0
+      ],
+      "sign": -1,
+      "distribution": "normal",
+      "contributor_type": "linear",
+      "sigma": 3.0
+    },
+    {
+      "name": "Washer thickness",
+      "nominal": 2.0,
+      "plus_tol": 0.025,
+      "minus_tol": 0.025,
+      "direction": [
+        1.0,
+        0.0,
+        0.0
+      ],
+      "sign": -1,
+      "distribution": "normal",
+      "contributor_type": "linear",
+      "sigma": 3.0
+    },
+    {
+      "name": "Retaining ring width",
+      "nominal": 1.5,
+      "plus_tol": 0.03,
+      "minus_tol": 0.03,
+      "direction": [
+        1.0,
+        0.0,
+        0.0
+      ],
+      "sign": -1,
+      "distribution": "normal",
+      "contributor_type": "linear",
+      "sigma": 3.0
+    },
+    {
+      "name": "Snap ring groove depth",
+      "nominal": 0.8,
+      "plus_tol": 0.02,
+      "minus_tol": 0.02,
+      "direction": [
+        1.0,
+        0.0,
+        0.0
+      ],
+      "sign": -1,
+      "distribution": "normal",
+      "contributor_type": "linear",
+      "sigma": 3.0
+    }
+  ]
+}

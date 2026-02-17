@@ -1,0 +1,214 @@
+{
+  "type": "assembly",
+  "name": "Stacked Plates",
+  "description": "Three plates stacked along Z, measuring total height",
+  "bodies": [
+    {
+      "name": "PlateA",
+      "description": "Bottom plate, 20mm thick",
+      "features": [
+        {
+          "name": "bottom",
+          "feature_type": "plane",
+          "origin": [
+            0,
+            0,
+            0
+          ],
+          "direction": [
+            0.0,
+            0.0,
+            -1.0
+          ],
+          "radius": 0.0,
+          "position_tol": 0.0,
+          "orientation_tol": 0.0,
+          "form_tol": 0.0,
+          "distribution": "normal",
+          "sigma": 3.0
+        },
+        {
+          "name": "top",
+          "feature_type": "plane",
+          "origin": [
+            0,
+            0,
+            20
+          ],
+          "direction": [
+            0.0,
+            0.0,
+            1.0
+          ],
+          "radius": 0.0,
+          "position_tol": 0.06,
+          "orientation_tol": 0.0,
+          "form_tol": 0.0,
+          "distribution": "normal",
+          "sigma": 3.0
+        }
+      ],
+      "placement_origin": [
+        0,
+        0,
+        0
+      ],
+      "placement_rotation": [
+        0,
+        0,
+        0
+      ]
+    },
+    {
+      "name": "PlateB",
+      "description": "Middle plate, 15mm thick",
+      "features": [
+        {
+          "name": "bottom",
+          "feature_type": "plane",
+          "origin": [
+            0,
+            0,
+            0
+          ],
+          "direction": [
+            0.0,
+            0.0,
+            -1.0
+          ],
+          "radius": 0.0,
+          "position_tol": 0.04,
+          "orientation_tol": 0.0,
+          "form_tol": 0.0,
+          "distribution": "normal",
+          "sigma": 3.0
+        },
+        {
+          "name": "top",
+          "feature_type": "plane",
+          "origin": [
+            0,
+            0,
+            15
+          ],
+          "direction": [
+            0.0,
+            0.0,
+            1.0
+          ],
+          "radius": 0.0,
+          "position_tol": 0.04,
+          "orientation_tol": 0.0,
+          "form_tol": 0.0,
+          "distribution": "normal",
+          "sigma": 3.0
+        }
+      ],
+      "placement_origin": [
+        0,
+        0,
+        20
+      ],
+      "placement_rotation": [
+        0,
+        0,
+        0
+      ]
+    },
+    {
+      "name": "PlateC",
+      "description": "Top plate, 10mm thick",
+      "features": [
+        {
+          "name": "bottom",
+          "feature_type": "plane",
+          "origin": [
+            0,
+            0,
+            0
+          ],
+          "direction": [
+            0.0,
+            0.0,
+            -1.0
+          ],
+          "radius": 0.0,
+          "position_tol": 0.03,
+          "orientation_tol": 0.0,
+          "form_tol": 0.0,
+          "distribution": "normal",
+          "sigma": 3.0
+        },
+        {
+          "name": "top",
+          "feature_type": "plane",
+          "origin": [
+            0,
+            0,
+            10
+          ],
+          "direction": [
+            0.0,
+            0.0,
+            1.0
+          ],
+          "radius": 0.0,
+          "position_tol": 0.03,
+          "orientation_tol": 0.0,
+          "form_tol": 0.0,
+          "distribution": "normal",
+          "sigma": 3.0
+        }
+      ],
+      "placement_origin": [
+        0,
+        0,
+        35
+      ],
+      "placement_rotation": [
+        0,
+        0,
+        0
+      ]
+    }
+  ],
+  "mates": [
+    {
+      "name": "A-B mate",
+      "body_a": "PlateA",
+      "feature_a": "top",
+      "body_b": "PlateB",
+      "feature_b": "bottom",
+      "mate_type": "coplanar",
+      "distance": 0.0,
+      "distance_tol": 0.02,
+      "distribution": "normal",
+      "sigma": 3.0
+    },
+    {
+      "name": "B-C mate",
+      "body_a": "PlateB",
+      "feature_a": "top",
+      "body_b": "PlateC",
+      "feature_b": "bottom",
+      "mate_type": "coplanar",
+      "distance": 0.0,
+      "distance_tol": 0.02,
+      "distribution": "normal",
+      "sigma": 3.0
+    }
+  ],
+  "measurement": {
+    "name": "total_height",
+    "body_a": "PlateA",
+    "feature_a": "bottom",
+    "body_b": "PlateC",
+    "feature_b": "top",
+    "measurement_type": "distance_along",
+    "direction": [
+      0,
+      0,
+      1
+    ]
+  }
+}

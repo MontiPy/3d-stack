@@ -321,6 +321,56 @@ def cmd_linkage_interactive(args: argparse.Namespace) -> None:
         print()
 
 
+# ---------------------------------------------------------------------------
+# Assembly commands
+# ---------------------------------------------------------------------------
+
+def cmd_assembly_analyze(args: argparse.Namespace) -> None:
+    """Run analysis on an assembly JSON file."""
+    from tolerance_stack.assembly import Assembly
+    from tolerance_stack.assembly_analysis import analyze_assembly
+
+    assy = Assembly.load(args.file)
+    methods = args.methods.split(",") if args.methods else None
+
+    results = analyze_assembly(
+        assy,
+        methods=methods,
+        sigma=args.sigma,
+        mc_samples=args.mc_samples,
+        mc_seed=args.seed,
+    )
+
+    for key, result in results.items():
+        print(result.summary())
+        print()
+
+
+def cmd_assembly_example(args: argparse.Namespace) -> None:
+    """Create an example assembly JSON file."""
+    from tolerance_stack.assembly_examples import (
+        create_pin_in_hole_assembly,
+        create_stacked_plates_assembly,
+        create_bracket_assembly,
+    )
+
+    builders = {
+        "pin-in-hole": create_pin_in_hole_assembly,
+        "stacked-plates": create_stacked_plates_assembly,
+        "bracket": create_bracket_assembly,
+    }
+
+    builder = builders.get(args.example)
+    if builder is None:
+        print(f"Unknown example: {args.example}")
+        sys.exit(1)
+
+    assy = builder()
+    path = args.output or f"{args.example}_assembly.json"
+    assy.save(path)
+    print(f"Created example assembly: {path}")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         prog="tolstack",
@@ -393,6 +443,26 @@ def main() -> None:
     p_li.add_argument("--mc-samples", type=int, default=100_000)
     p_li.add_argument("--seed", type=int, default=None)
     p_li.set_defaults(func=cmd_linkage_interactive)
+
+    # --- assembly analyze ---
+    p_aa = subparsers.add_parser("assembly-analyze",
+                                  help="Analyze an assembly from a JSON file")
+    p_aa.add_argument("file", help="Path to assembly JSON file")
+    p_aa.add_argument("-m", "--methods", default=None,
+                      help="Comma-separated methods: wc,rss,mc (default: all)")
+    p_aa.add_argument("--sigma", type=float, default=3.0)
+    p_aa.add_argument("--mc-samples", type=int, default=100_000)
+    p_aa.add_argument("--seed", type=int, default=None)
+    p_aa.set_defaults(func=cmd_assembly_analyze)
+
+    # --- assembly example ---
+    p_ae = subparsers.add_parser("assembly-example",
+                                  help="Create an example assembly JSON file")
+    p_ae.add_argument("example", choices=["pin-in-hole", "stacked-plates", "bracket"],
+                      help="Which example to create")
+    p_ae.add_argument("-o", "--output", default=None,
+                      help="Output file path")
+    p_ae.set_defaults(func=cmd_assembly_example)
 
     args = parser.parse_args()
     if args.command is None:

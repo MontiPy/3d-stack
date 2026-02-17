@@ -1,0 +1,62 @@
+{
+  "type": "linkage",
+  "name": "Planar Two-Bar Linkage",
+  "description": "Two rigid links with a revolute joint, in the XY plane",
+  "joints": [
+    {
+      "name": "Base",
+      "joint_type": "revolute_z",
+      "nominal": 30.0,
+      "plus_tol": 0.0,
+      "minus_tol": 0.0,
+      "distribution": "normal",
+      "sigma": 3.0
+    },
+    {
+      "name": "Elbow",
+      "joint_type": "revolute_z",
+      "nominal": 45.0,
+      "plus_tol": 0.5,
+      "minus_tol": 0.5,
+      "distribution": "normal",
+      "sigma": 3.0
+    },
+    {
+      "name": "Tip",
+      "joint_type": "fixed",
+      "nominal": 0.0,
+      "plus_tol": 0.0,
+      "minus_tol": 0.0,
+      "distribution": "normal",
+      "sigma": 3.0
+    }
+  ],
+  "links": [
+    {
+      "name": "Link1",
+      "length": 100.0,
+      "plus_tol": 0.1,
+      "minus_tol": 0.1,
+      "direction": [
+        1.0,
+        0.0,
+        0.0
+      ],
+      "distribution": "normal",
+      "sigma": 3.0
+    },
+    {
+      "name": "Link2",
+      "length": 80.0,
+      "plus_tol": 0.08,
+      "minus_tol": 0.08,
+      "direction": [
+        1.0,
+        0.0,
+        0.0
+      ],
+      "distribution": "normal",
+      "sigma": 3.0
+    }
+  ]
+}

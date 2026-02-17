@@ -130,6 +130,98 @@ A contributor perpendicular to the closure direction has zero effect.
 }
 ```
 
+## 3D Linkage Analysis
+
+In addition to linear tolerance stacks, the tool supports **3D kinematic
+linkages** — chains of rigid links connected by joints. Tolerances on
+link lengths and joint angles propagate to the end-effector position
+through forward kinematics and Jacobian-based sensitivity analysis.
+
+### Linkage Features
+
+- **Joint types**: Revolute (X/Y/Z), Prismatic (X/Y/Z), Spherical, Fixed
+- **Forward kinematics** using 4x4 homogeneous transformation matrices
+- **Numerical Jacobian** for sensitivity of end-effector XYZ to each parameter
+- **3D tolerance zones** — per-axis and radial tolerance at the end-effector
+- **Covariance ellipsoids** from Monte Carlo showing the 3D scatter shape
+- **Visualization** — 3D skeleton plots, sensitivity bar charts, MC scatter
+
+### Linkage Quick Start
+
+```bash
+# Generate an example linkage
+python -m tolerance_stack.cli linkage-example two-bar -o two_bar.json
+python -m tolerance_stack.cli linkage-example robot-arm -o robot_arm.json
+python -m tolerance_stack.cli linkage-example four-bar -o four_bar.json
+
+# Analyze a linkage
+python -m tolerance_stack.cli linkage-analyze two_bar.json
+
+# With plots
+python -m tolerance_stack.cli linkage-analyze robot_arm.json --plot
+
+# Interactive linkage builder
+python -m tolerance_stack.cli linkage-interactive
+```
+
+### Linkage Python API
+
+```python
+from tolerance_stack import Joint, JointType, Link, Linkage, analyze_linkage
+
+linkage = Linkage(name="My Mechanism")
+
+linkage.add_joint(Joint("Base", JointType.REVOLUTE_Z, nominal=30.0,
+                        plus_tol=0.5, minus_tol=0.5))
+linkage.add_link(Link("Arm1", length=100.0, plus_tol=0.1, minus_tol=0.1,
+                       direction=(1, 0, 0)))
+linkage.add_joint(Joint("Elbow", JointType.REVOLUTE_Z, nominal=45.0,
+                        plus_tol=0.5, minus_tol=0.5))
+linkage.add_link(Link("Arm2", length=80.0, plus_tol=0.08, minus_tol=0.08,
+                       direction=(1, 0, 0)))
+linkage.add_joint(Joint("Tip", JointType.FIXED))
+
+results = analyze_linkage(linkage, mc_seed=42)
+
+for method, result in results.items():
+    print(result.summary())
+```
+
+### Linkage JSON Format
+
+```json
+{
+  "type": "linkage",
+  "name": "Two-Bar Linkage",
+  "joints": [
+    {"name": "Base", "joint_type": "revolute_z", "nominal": 30.0,
+     "plus_tol": 0.5, "minus_tol": 0.5},
+    {"name": "Elbow", "joint_type": "revolute_z", "nominal": 45.0,
+     "plus_tol": 0.5, "minus_tol": 0.5},
+    {"name": "Tip", "joint_type": "fixed", "nominal": 0.0}
+  ],
+  "links": [
+    {"name": "Arm1", "length": 100.0, "plus_tol": 0.1, "minus_tol": 0.1,
+     "direction": [1, 0, 0]},
+    {"name": "Arm2", "length": 80.0, "plus_tol": 0.08, "minus_tol": 0.08,
+     "direction": [1, 0, 0]}
+  ]
+}
+```
+
+### How Linkage Tolerance Propagation Works
+
+1. **Build the chain**: Joints and links alternate: J0 -> L0 -> J1 -> L1 -> ... -> Jn
+2. **Forward kinematics**: Multiply all 4x4 transforms to get end-effector position
+3. **Numerical Jacobian**: Perturb each tolerance parameter and measure the
+   end-effector shift (central difference). This captures lever arm amplification,
+   angular coupling, and 3D geometry effects.
+4. **Analysis**:
+   - **Worst-Case**: |J_col| * half_tolerance, summed per axis
+   - **RSS**: Variances add in quadrature through the Jacobian
+   - **Monte Carlo**: Full nonlinear FK with sampled parameters, producing a
+     3D position distribution with covariance matrix
+
 ## Running Tests
 
 ```bash

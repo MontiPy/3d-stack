@@ -1,0 +1,84 @@
+{
+  "type": "linkage",
+  "name": "3-DOF Spatial Robot Arm",
+  "description": "Shoulder-elbow-wrist arm with upward links",
+  "joints": [
+    {
+      "name": "Shoulder",
+      "joint_type": "revolute_y",
+      "nominal": 45.0,
+      "plus_tol": 0.3,
+      "minus_tol": 0.3,
+      "distribution": "normal",
+      "sigma": 3.0
+    },
+    {
+      "name": "Elbow",
+      "joint_type": "revolute_y",
+      "nominal": -30.0,
+      "plus_tol": 0.4,
+      "minus_tol": 0.4,
+      "distribution": "normal",
+      "sigma": 3.0
+    },
+    {
+      "name": "Wrist",
+      "joint_type": "revolute_x",
+      "nominal": 0.0,
+      "plus_tol": 0.2,
+      "minus_tol": 0.2,
+      "distribution": "normal",
+      "sigma": 3.0
+    },
+    {
+      "name": "Tip",
+      "joint_type": "fixed",
+      "nominal": 0.0,
+      "plus_tol": 0.0,
+      "minus_tol": 0.0,
+      "distribution": "normal",
+      "sigma": 3.0
+    }
+  ],
+  "links": [
+    {
+      "name": "Upper Arm",
+      "length": 200.0,
+      "plus_tol": 0.15,
+      "minus_tol": 0.15,
+      "direction": [
+        0.0,
+        0.0,
+        1.0
+      ],
+      "distribution": "normal",
+      "sigma": 3.0
+    },
+    {
+      "name": "Forearm",
+      "length": 150.0,
+      "plus_tol": 0.12,
+      "minus_tol": 0.12,
+      "direction": [
+        0.0,
+        0.0,
+        1.0
+      ],
+      "distribution": "normal",
+      "sigma": 3.0
+    },
+    {
+      "name": "Hand",
+      "length": 50.0,
+      "plus_tol": 0.05,
+      "minus_tol": 0.05,
+      "direction": [
+        0.0,
+        0.0,
+        1.0
+      ],
+      "distribution": "normal",
+      "sigma": 3.0
+    }
+  ]
+}

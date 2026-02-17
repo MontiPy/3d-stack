@@ -8,8 +8,10 @@ Launch with:
 
 from __future__ import annotations
 
+import base64
 import io
 import json
+import math
 import tempfile
 
 import matplotlib
@@ -30,10 +32,18 @@ st.set_page_config(
 
 st.title("3D Tolerance Stack Analyzer")
 
-tab_stack, tab_linkage, tab_assembly = st.tabs([
+ALL_DISTRIBUTIONS = [
+    "normal", "uniform", "triangular",
+    "weibull_right", "weibull_left", "lognormal",
+    "rayleigh", "bimodal",
+]
+
+tab_stack, tab_linkage, tab_assembly, tab_tools, tab_reports = st.tabs([
     "Tolerance Stack",
     "Linkage",
     "Assembly",
+    "DOE / Optimizer",
+    "Reports",
 ])
 
 
@@ -85,7 +95,7 @@ with tab_stack:
             with c2:
                 c_dir = st.text_input("Direction (x,y,z)", "1,0,0", key="ts_c_dir")
                 c_sign = st.selectbox("Sign", [+1, -1], key="ts_c_sign")
-                c_dist = st.selectbox("Distribution", ["normal", "uniform", "triangular"], key="ts_c_dist")
+                c_dist = st.selectbox("Distribution", ALL_DISTRIBUTIONS, key="ts_c_dist")
                 c_sigma = st.number_input("Sigma", value=3.0, min_value=0.1, key="ts_c_sigma")
 
             if st.button("Add contributor", key="ts_add"):
@@ -113,7 +123,7 @@ with tab_stack:
                 sign_str = "+" if c["sign"] == 1 else "-"
                 col_info, col_del = st.columns([5, 1])
                 with col_info:
-                    st.text(f"{sign_str} {c['name']}: {c['nominal']:.4f} +{c['plus_tol']:.4f}/-{c['minus_tol']:.4f}  dir={c['direction']}")
+                    st.text(f"{sign_str} {c['name']}: {c['nominal']:.4f} +{c['plus_tol']:.4f}/-{c['minus_tol']:.4f}  dir={c['direction']}  dist={c['distribution']}")
                 with col_del:
                     if st.button("Remove", key=f"ts_del_{i}"):
                         st.session_state["ts_contributors"].pop(i)
@@ -151,6 +161,13 @@ with tab_stack:
 
         ts_methods = st.multiselect("Methods", ["wc", "rss", "mc"], default=["wc", "rss", "mc"], key="ts_methods")
 
+        # --- Spec limits for process capability ---
+        with st.expander("Process Capability (Spec Limits)"):
+            ts_usl = st.number_input("USL (Upper Spec Limit)", value=0.0, format="%.4f", key="ts_usl")
+            ts_lsl = st.number_input("LSL (Lower Spec Limit)", value=0.0, format="%.4f", key="ts_lsl")
+            ts_target = st.number_input("Target (optional, 0=midpoint)", value=0.0, format="%.4f", key="ts_target")
+            ts_calc_cp = st.checkbox("Calculate Cp/Cpk after MC", value=False, key="ts_calc_cp")
+
         if st.button("Run Analysis", key="ts_run", type="primary", disabled=len(contribs) == 0):
             from tolerance_stack.models import Contributor, ToleranceStack, Distribution, ContributorType
             from tolerance_stack.analysis import analyze_stack
@@ -177,6 +194,34 @@ with tab_stack:
             for key, result in results.items():
                 st.text(result.summary())
 
+            # --- Percent Contribution ---
+            best_result = results.get("rss", results.get("wc", results.get("mc")))
+            if best_result and best_result.sensitivity:
+                from tolerance_stack.statistics import percent_contribution
+                sens_list = best_result.sensitivity
+                tols = [c["plus_tol"] for c in contribs]
+                if len(sens_list) == len(tols):
+                    pct = percent_contribution(sens_list, tols)
+                    if pct:
+                        st.markdown("**Percent Contribution (RSS)**")
+                        fig_pc, ax_pc = plt.subplots(figsize=(6, max(3, len(pct) * 0.35)))
+                        pct_sorted = sorted(pct, key=lambda x: x[1], reverse=True)
+                        names_pc = [p[0] for p in pct_sorted]
+                        vals_pc = [p[1] for p in pct_sorted]
+                        bars = ax_pc.barh(range(len(names_pc)), vals_pc, color="#FF9800",
+                                          edgecolor="black", linewidth=0.5)
+                        ax_pc.set_yticks(range(len(names_pc)))
+                        ax_pc.set_yticklabels(names_pc)
+                        ax_pc.set_xlabel("Contribution (%)")
+                        ax_pc.set_title("Percent Contribution")
+                        ax_pc.invert_yaxis()
+                        for bar, val in zip(bars, vals_pc):
+                            ax_pc.text(bar.get_width() + 0.5, bar.get_y() + bar.get_height() / 2,
+                                       f"{val:.1f}%", va="center", fontsize=8)
+                        fig_pc.tight_layout()
+                        st.pyplot(fig_pc)
+                        plt.close(fig_pc)
+
             # --- Plots ---
             if "mc" in results and results["mc"].mc_samples is not None:
                 mc_result = results["mc"]
@@ -187,6 +232,14 @@ with tab_stack:
                 for k in [1, 2, 3]:
                     ax.axvline(mc_result.mc_mean + k * mc_result.mc_std, color="orange", linestyle=":", linewidth=0.8)
                     ax.axvline(mc_result.mc_mean - k * mc_result.mc_std, color="orange", linestyle=":", linewidth=0.8)
+
+                # Overlay spec limits if provided
+                if ts_calc_cp and (ts_usl != 0 or ts_lsl != 0):
+                    if ts_usl != 0:
+                        ax.axvline(ts_usl, color="green", linestyle="-", linewidth=2, label=f"USL={ts_usl:.4f}")
+                    if ts_lsl != 0:
+                        ax.axvline(ts_lsl, color="green", linestyle="-", linewidth=2, label=f"LSL={ts_lsl:.4f}")
+
                 ax.set_xlabel("Gap Value")
                 ax.set_ylabel("Density")
                 ax.set_title("Monte Carlo Distribution")
@@ -194,6 +247,18 @@ with tab_stack:
                 fig.tight_layout()
                 st.pyplot(fig)
                 plt.close(fig)
+
+                # --- Process Capability ---
+                if ts_calc_cp and (ts_usl != 0 or ts_lsl != 0):
+                    from tolerance_stack.statistics import compute_process_capability
+                    usl = ts_usl if ts_usl != 0 else None
+                    lsl = ts_lsl if ts_lsl != 0 else None
+                    tgt = ts_target if ts_target != 0 else None
+                    cp_result = compute_process_capability(
+                        mc_result.mc_samples, usl=usl, lsl=lsl, target=tgt
+                    )
+                    st.markdown("**Process Capability**")
+                    st.text(cp_result.summary())
 
             # Sensitivity chart
             best_result = results.get("wc", results.get("rss", results.get("mc")))
@@ -271,12 +336,13 @@ with tab_linkage:
                 j_plus = st.number_input("Plus tol", value=0.0, min_value=0.0, format="%.4f", key="lk_j_plus")
             with jc2:
                 j_minus = st.number_input("Minus tol", value=0.0, min_value=0.0, format="%.4f", key="lk_j_minus")
+            j_dist = st.selectbox("Distribution", ALL_DISTRIBUTIONS, key="lk_j_dist")
 
             if st.button("Add joint", key="lk_add_j"):
                 st.session_state["lk_joints"].append({
                     "name": j_name, "joint_type": j_type,
                     "nominal": j_nom, "plus_tol": j_plus, "minus_tol": j_minus,
-                    "distribution": "normal", "sigma": 3.0,
+                    "distribution": j_dist, "sigma": 3.0,
                 })
                 st.rerun()
 
@@ -290,6 +356,7 @@ with tab_linkage:
                 l_plus = st.number_input("Plus tol", value=0.0, min_value=0.0, format="%.4f", key="lk_l_plus")
             with lc2:
                 l_minus = st.number_input("Minus tol", value=0.0, min_value=0.0, format="%.4f", key="lk_l_minus")
+            l_dist = st.selectbox("Distribution", ALL_DISTRIBUTIONS, key="lk_l_dist")
 
             if st.button("Add link", key="lk_add_l"):
                 try:
@@ -299,7 +366,7 @@ with tab_linkage:
                 st.session_state["lk_links"].append({
                     "name": l_name, "length": l_len, "direction": direction,
                     "plus_tol": l_plus, "minus_tol": l_minus,
-                    "distribution": "normal", "sigma": 3.0,
+                    "distribution": l_dist, "sigma": 3.0,
                 })
                 st.rerun()
 
@@ -474,6 +541,26 @@ with tab_assembly:
             except Exception as e:
                 st.error(f"Failed to load: {e}")
 
+        # --- STEP file import ---
+        with st.expander("Import from STEP file"):
+            step_uploaded = st.file_uploader("Upload STEP file (.stp/.step)", type=["stp", "step"], key="step_upload")
+            if step_uploaded is not None and st.button("Import STEP", key="step_import_btn"):
+                from tolerance_stack.step_import import import_step
+                with tempfile.NamedTemporaryFile(suffix=".stp", delete=False, mode="wb") as tf:
+                    tf.write(step_uploaded.read())
+                    tf.flush()
+                    step_result = import_step(tf.name, assembly_name=assy_name)
+                st.text(step_result.summary())
+                if step_result.assembly:
+                    with tempfile.NamedTemporaryFile(suffix=".json", delete=False, mode="w") as jf:
+                        step_result.assembly.save(jf.name)
+                        with open(jf.name) as rf:
+                            st.session_state["assy_data"] = json.load(rf)
+                    st.success(f"Assembly imported: {len(step_result.assembly.bodies)} bodies")
+                    st.rerun()
+                else:
+                    st.warning("Could not construct assembly from STEP file.")
+
         # --- Load example ---
         assy_example = st.selectbox("Load example",
                                      ["(none)", "pin-in-hole", "stacked-plates", "bracket"],
@@ -515,6 +602,14 @@ with tab_assembly:
                         tol_str = f"  [{', '.join(tol_parts)}]" if tol_parts else ""
                         st.text(f"  {feat['feature_type']:10s} {feat['name']}: origin={feat.get('origin', [0,0,0])}, dir={feat.get('direction', [0,0,1])}{tol_str}")
 
+                        # Show GD&T if present
+                        fcfs = feat.get("feature_control_frames", [])
+                        if fcfs:
+                            for fcf in fcfs:
+                                datum_str = f"  datums: {fcf.get('datum_refs', [])}" if fcf.get('datum_refs') else ""
+                                mc_str = f"  [{fcf.get('material_condition', 'NONE')}]" if fcf.get('material_condition', 'NONE') != 'NONE' else ""
+                                st.text(f"    GD&T: {fcf.get('gdt_type', '?')} = {fcf.get('tolerance_value', 0):.4f}{mc_str}{datum_str}")
+
             if assy_data.get("mates"):
                 st.markdown("**Mates:**")
                 for m in assy_data["mates"]:
@@ -534,7 +629,7 @@ with tab_assembly:
                 mime="application/json", key="assy_export",
             )
         else:
-            st.info("Load an example or upload a JSON file to get started.")
+            st.info("Load an example, upload a JSON file, or import a STEP file to get started.")
 
     with col_results3:
         st.subheader("Analysis")
@@ -548,6 +643,12 @@ with tab_assembly:
             assy_seed = st.number_input("MC seed", value=42, key="assy_seed")
 
         assy_methods = st.multiselect("Methods", ["wc", "rss", "mc"], default=["wc", "rss", "mc"], key="assy_methods")
+
+        # --- Spec limits for assembly process capability ---
+        with st.expander("Process Capability (Spec Limits)"):
+            assy_usl = st.number_input("USL", value=0.0, format="%.4f", key="assy_usl")
+            assy_lsl = st.number_input("LSL", value=0.0, format="%.4f", key="assy_lsl")
+            assy_calc_cp = st.checkbox("Calculate Cp/Cpk after MC", value=False, key="assy_calc_cp")
 
         can_run_assy = assy_data is not None and assy_data.get("measurement") is not None
         if assy_data and not can_run_assy:
@@ -571,6 +672,12 @@ with tab_assembly:
             for key, result in results.items():
                 st.text(result.summary())
 
+            # --- DOF Status ---
+            with st.expander("DOF Status", expanded=False):
+                from tolerance_stack.assembly_process import compute_dof_status
+                dof = compute_dof_status(assy_obj)
+                st.text(dof.summary())
+
             # MC histogram
             mc_result = results.get("mc")
             if mc_result and mc_result.mc_samples is not None:
@@ -584,6 +691,13 @@ with tab_assembly:
                                linestyle=":", linewidth=0.8)
                     ax.axvline(mc_result.mc_mean - k * mc_result.mc_std, color="orange",
                                linestyle=":", linewidth=0.8)
+
+                if assy_calc_cp and (assy_usl != 0 or assy_lsl != 0):
+                    if assy_usl != 0:
+                        ax.axvline(assy_usl, color="green", linestyle="-", linewidth=2, label=f"USL={assy_usl:.4f}")
+                    if assy_lsl != 0:
+                        ax.axvline(assy_lsl, color="green", linestyle="-", linewidth=2, label=f"LSL={assy_lsl:.4f}")
+
                 ax.set_xlabel("Measurement Value")
                 ax.set_ylabel("Density")
                 ax.set_title("Monte Carlo Distribution")
@@ -591,6 +705,15 @@ with tab_assembly:
                 fig.tight_layout()
                 st.pyplot(fig)
                 plt.close(fig)
+
+                # Process Capability
+                if assy_calc_cp and (assy_usl != 0 or assy_lsl != 0):
+                    from tolerance_stack.statistics import compute_process_capability
+                    usl = assy_usl if assy_usl != 0 else None
+                    lsl = assy_lsl if assy_lsl != 0 else None
+                    cp_result = compute_process_capability(mc_result.mc_samples, usl=usl, lsl=lsl)
+                    st.markdown("**Process Capability**")
+                    st.text(cp_result.summary())
 
             # Sensitivity chart
             best = results.get("wc", results.get("rss", results.get("mc")))
@@ -616,25 +739,472 @@ with tab_assembly:
 
 
 # ===================================================================
+# TAB 4: DOE / Optimizer
+# ===================================================================
+
+with tab_tools:
+    st.header("Design of Experiments & Tolerance Optimization")
+
+    tool_mode = st.radio("Tool", ["HLM Sensitivity", "Full Factorial DOE", "Tolerance Optimizer"],
+                         horizontal=True, key="tool_mode")
+
+    # --- HLM Sensitivity ---
+    if tool_mode == "HLM Sensitivity":
+        st.subheader("High-Low-Median Sensitivity Analysis")
+        st.markdown("Tests each factor at its high, low, and nominal values while holding all others at nominal.")
+
+        if "hlm_factors" not in st.session_state:
+            st.session_state["hlm_factors"] = []
+
+        with st.expander("Add a factor", expanded=len(st.session_state["hlm_factors"]) == 0):
+            hf_name = st.text_input("Factor name", key="hlm_f_name")
+            hf_low = st.number_input("Low level", value=-1.0, format="%.4f", key="hlm_f_low")
+            hf_nom = st.number_input("Nominal", value=0.0, format="%.4f", key="hlm_f_nom")
+            hf_high = st.number_input("High level", value=1.0, format="%.4f", key="hlm_f_high")
+
+            if st.button("Add factor", key="hlm_add_f"):
+                st.session_state["hlm_factors"].append({
+                    "name": hf_name, "low": hf_low, "nominal": hf_nom, "high": hf_high,
+                })
+                st.rerun()
+
+        factors_hlm = st.session_state["hlm_factors"]
+        if factors_hlm:
+            for i, f in enumerate(factors_hlm):
+                fc, fd = st.columns([5, 1])
+                with fc:
+                    st.text(f"  {f['name']}: low={f['low']}, nom={f['nominal']}, high={f['high']}")
+                with fd:
+                    if st.button("X", key=f"hlm_del_{i}"):
+                        st.session_state["hlm_factors"].pop(i)
+                        st.rerun()
+
+        st.markdown("**Response function:** `sum(factor_value * weight)` (interactive demo)")
+        hlm_weights_str = st.text_input(
+            "Weights (comma-separated, one per factor)",
+            value=",".join(["1.0"] * max(1, len(factors_hlm))),
+            key="hlm_weights",
+        )
+
+        if st.button("Run HLM Analysis", key="hlm_run", type="primary", disabled=len(factors_hlm) < 1):
+            from tolerance_stack.optimizer import hlm_sensitivity, DOEFactor
+
+            try:
+                weights = [float(w.strip()) for w in hlm_weights_str.split(",")]
+            except ValueError:
+                weights = [1.0] * len(factors_hlm)
+
+            doe_factors = []
+            for fi, fd in enumerate(factors_hlm):
+                doe_factors.append(DOEFactor(
+                    name=fd["name"],
+                    levels=[fd["low"], fd["nominal"], fd["high"]],
+                    nominal=fd["nominal"],
+                ))
+
+            def evaluate_hlm(inputs):
+                total = 0.0
+                for fi, fd in enumerate(factors_hlm):
+                    w = weights[fi] if fi < len(weights) else 1.0
+                    total += inputs[fd["name"]] * w
+                return total
+
+            result = hlm_sensitivity(evaluate_hlm, doe_factors)
+            st.text(result.summary())
+
+            # Main effects chart
+            if result.main_effects:
+                me_sorted = sorted(result.main_effects.items(), key=lambda x: abs(x[1]), reverse=True)
+                names_me = [m[0] for m in me_sorted]
+                vals_me = [m[1] for m in me_sorted]
+                fig_me, ax_me = plt.subplots(figsize=(8, max(3, len(names_me) * 0.5)))
+                ax_me.barh(range(len(names_me)), vals_me, color="#9C27B0",
+                           edgecolor="black", linewidth=0.5)
+                ax_me.set_yticks(range(len(names_me)))
+                ax_me.set_yticklabels(names_me)
+                ax_me.set_xlabel("Main Effect (range)")
+                ax_me.set_title("HLM Main Effects")
+                ax_me.invert_yaxis()
+                fig_me.tight_layout()
+                st.pyplot(fig_me)
+                plt.close(fig_me)
+
+    # --- Full Factorial DOE ---
+    elif tool_mode == "Full Factorial DOE":
+        st.subheader("Full Factorial DOE with Interaction Analysis")
+        st.markdown("Tests all combinations of factor levels. Computes main effects and two-factor interactions.")
+
+        if "doe_factors" not in st.session_state:
+            st.session_state["doe_factors"] = []
+
+        with st.expander("Add a factor", expanded=len(st.session_state["doe_factors"]) == 0):
+            df_name = st.text_input("Factor name", key="doe_f_name")
+            df_low = st.number_input("Low level", value=-1.0, format="%.4f", key="doe_f_low")
+            df_high = st.number_input("High level", value=1.0, format="%.4f", key="doe_f_high")
+            df_nom = st.number_input("Nominal", value=0.0, format="%.4f", key="doe_f_nom")
+
+            if st.button("Add factor", key="doe_add_f"):
+                st.session_state["doe_factors"].append({
+                    "name": df_name, "low": df_low, "high": df_high, "nominal": df_nom,
+                })
+                st.rerun()
+
+        factors_doe = st.session_state["doe_factors"]
+        if factors_doe:
+            n_runs_est = 2 ** len(factors_doe)
+            st.text(f"Factors: {len(factors_doe)}, Estimated runs: {n_runs_est}")
+            for i, f in enumerate(factors_doe):
+                fc, fd = st.columns([5, 1])
+                with fc:
+                    st.text(f"  {f['name']}: [{f['low']}, {f['high']}], nom={f['nominal']}")
+                with fd:
+                    if st.button("X", key=f"doe_del_{i}"):
+                        st.session_state["doe_factors"].pop(i)
+                        st.rerun()
+
+        st.markdown("**Response function:** `sum(factor_value * weight) + interactions`")
+        doe_weights_str = st.text_input(
+            "Weights (comma-separated, one per factor)",
+            value=",".join(["1.0"] * max(1, len(factors_doe))),
+            key="doe_weights",
+        )
+        doe_interact = st.checkbox("Add product interaction term (f1*f2)", value=False, key="doe_interact")
+
+        if st.button("Run Full Factorial DOE", key="doe_run", type="primary", disabled=len(factors_doe) < 2):
+            from tolerance_stack.optimizer import full_factorial_doe, DOEFactor
+
+            try:
+                weights = [float(w.strip()) for w in doe_weights_str.split(",")]
+            except ValueError:
+                weights = [1.0] * len(factors_doe)
+
+            doe_factor_objs = []
+            for fd in factors_doe:
+                doe_factor_objs.append(DOEFactor(
+                    name=fd["name"],
+                    levels=[fd["low"], fd["high"]],
+                    nominal=fd["nominal"],
+                ))
+
+            def evaluate_doe(inputs):
+                total = 0.0
+                factor_names = [fd["name"] for fd in factors_doe]
+                for fi, fn in enumerate(factor_names):
+                    w = weights[fi] if fi < len(weights) else 1.0
+                    total += inputs[fn] * w
+                if doe_interact and len(factor_names) >= 2:
+                    total += inputs[factor_names[0]] * inputs[factor_names[1]]
+                return total
+
+            result = full_factorial_doe(evaluate_doe, doe_factor_objs)
+            st.text(result.summary())
+
+            # Main effects chart
+            if result.main_effects:
+                me_sorted = sorted(result.main_effects.items(), key=lambda x: abs(x[1]), reverse=True)
+                names_me = [m[0] for m in me_sorted]
+                vals_me = [m[1] for m in me_sorted]
+                fig_me, ax_me = plt.subplots(figsize=(8, max(3, len(names_me) * 0.5)))
+                colors = ["#4CAF50" if v >= 0 else "#F44336" for v in vals_me]
+                ax_me.barh(range(len(names_me)), vals_me, color=colors,
+                           edgecolor="black", linewidth=0.5)
+                ax_me.set_yticks(range(len(names_me)))
+                ax_me.set_yticklabels(names_me)
+                ax_me.set_xlabel("Main Effect")
+                ax_me.set_title("DOE Main Effects")
+                ax_me.invert_yaxis()
+                fig_me.tight_layout()
+                st.pyplot(fig_me)
+                plt.close(fig_me)
+
+            # Interactions chart
+            if result.interactions:
+                int_sorted = sorted(result.interactions.items(), key=lambda x: abs(x[1]), reverse=True)
+                int_sorted = int_sorted[:10]
+                names_int = [f"{a} x {b}" for (a, b), _ in int_sorted]
+                vals_int = [v for _, v in int_sorted]
+                fig_int, ax_int = plt.subplots(figsize=(8, max(3, len(names_int) * 0.5)))
+                ax_int.barh(range(len(names_int)), vals_int, color="#FF9800",
+                            edgecolor="black", linewidth=0.5)
+                ax_int.set_yticks(range(len(names_int)))
+                ax_int.set_yticklabels(names_int)
+                ax_int.set_xlabel("Interaction Effect")
+                ax_int.set_title("Two-Factor Interactions")
+                ax_int.invert_yaxis()
+                fig_int.tight_layout()
+                st.pyplot(fig_int)
+                plt.close(fig_int)
+
+    # --- Tolerance Optimizer ---
+    elif tool_mode == "Tolerance Optimizer":
+        st.subheader("Tolerance Optimization")
+        st.markdown("Optimize tolerance allocations to minimize cost while meeting a variation target.")
+
+        if "opt_params" not in st.session_state:
+            st.session_state["opt_params"] = []
+
+        with st.expander("Add a parameter", expanded=len(st.session_state["opt_params"]) == 0):
+            op_name = st.text_input("Parameter name", key="opt_p_name")
+            op_sens = st.number_input("Sensitivity", value=1.0, format="%.4f", key="opt_p_sens")
+            op_tol = st.number_input("Current half-tolerance", value=0.1, min_value=0.001, format="%.4f", key="opt_p_tol")
+
+            if st.button("Add parameter", key="opt_add_p"):
+                st.session_state["opt_params"].append({
+                    "name": op_name, "sensitivity": op_sens, "tolerance": op_tol,
+                })
+                st.rerun()
+
+        opt_params = st.session_state["opt_params"]
+        if opt_params:
+            for i, p in enumerate(opt_params):
+                pc, pd = st.columns([5, 1])
+                with pc:
+                    st.text(f"  {p['name']}: sens={p['sensitivity']}, tol={p['tolerance']}")
+                with pd:
+                    if st.button("X", key=f"opt_del_{i}"):
+                        st.session_state["opt_params"].pop(i)
+                        st.rerun()
+
+        opt_target = st.number_input("Target variation (RSS)", value=0.05, min_value=0.001, format="%.4f", key="opt_target")
+        opt_max_iter = st.number_input("Max iterations", value=100, min_value=10, key="opt_max_iter")
+
+        if st.button("Optimize", key="opt_run", type="primary", disabled=len(opt_params) < 1):
+            from tolerance_stack.optimizer import optimize_tolerances
+
+            sens = [(p["name"], p["sensitivity"]) for p in opt_params]
+            tols = {p["name"]: p["tolerance"] for p in opt_params}
+
+            result = optimize_tolerances(
+                sens, tols,
+                target_variation=opt_target,
+                max_iterations=int(opt_max_iter),
+            )
+            st.text(result.summary())
+
+            # Before/after chart
+            names_opt = sorted(result.original_tolerances.keys())
+            orig_vals = [result.original_tolerances[n] for n in names_opt]
+            opt_vals = [result.optimized_tolerances.get(n, result.original_tolerances[n]) for n in names_opt]
+
+            fig_opt, ax_opt = plt.subplots(figsize=(8, max(3, len(names_opt) * 0.5)))
+            y = np.arange(len(names_opt))
+            ax_opt.barh(y - 0.2, orig_vals, height=0.35, color="#BDBDBD", label="Original", edgecolor="black", linewidth=0.5)
+            ax_opt.barh(y + 0.2, opt_vals, height=0.35, color="#2196F3", label="Optimized", edgecolor="black", linewidth=0.5)
+            ax_opt.set_yticks(y)
+            ax_opt.set_yticklabels(names_opt)
+            ax_opt.set_xlabel("Half-Tolerance")
+            ax_opt.set_title("Tolerance Optimization Results")
+            ax_opt.legend()
+            ax_opt.invert_yaxis()
+            fig_opt.tight_layout()
+            st.pyplot(fig_opt)
+            plt.close(fig_opt)
+
+
+# ===================================================================
+# TAB 5: Reports
+# ===================================================================
+
+with tab_reports:
+    st.header("Report Generation")
+    st.markdown("Generate HTML or APQP-compliant reports from analysis results.")
+
+    st.subheader("Report Configuration")
+    rc1, rc2 = st.columns(2)
+    with rc1:
+        rpt_title = st.text_input("Report title", "Tolerance Stack Analysis Report", key="rpt_title")
+        rpt_project = st.text_input("Project", "3D Stack Project", key="rpt_project")
+        rpt_author = st.text_input("Author", "", key="rpt_author")
+    with rc2:
+        rpt_revision = st.text_input("Revision", "A", key="rpt_revision")
+        rpt_format = st.selectbox("Report format", ["HTML", "APQP (HTML)", "Plain Text"], key="rpt_format")
+        rpt_include_plots = st.checkbox("Include plots", value=True, key="rpt_plots")
+
+    st.markdown("---")
+    st.subheader("Run Analysis and Generate Report")
+    st.markdown("Select an analysis source to include in the report.")
+
+    rpt_source = st.radio("Analysis source", [
+        "Tolerance Stack (Tab 1)",
+        "Assembly (Tab 3)",
+        "Manual input",
+    ], key="rpt_source")
+
+    if rpt_source == "Manual input":
+        st.markdown("Enter results manually as JSON:")
+        rpt_manual = st.text_area(
+            "Results JSON",
+            value='{"nominal": 10.0, "wc_variation": 0.5, "rss_variation": 0.25, "mc_mean": 10.01, "mc_std": 0.08}',
+            key="rpt_manual",
+        )
+
+    # Spec limits for APQP
+    if rpt_format == "APQP (HTML)":
+        with st.expander("APQP Spec Limits"):
+            rpt_usl = st.number_input("USL", value=0.0, format="%.4f", key="rpt_usl")
+            rpt_lsl = st.number_input("LSL", value=0.0, format="%.4f", key="rpt_lsl")
+
+    if st.button("Generate Report", key="rpt_gen", type="primary"):
+        from tolerance_stack.reporting import ReportConfig, generate_html_report, generate_text_report, generate_apqp_report
+
+        config = ReportConfig(
+            title=rpt_title,
+            project=rpt_project,
+            author=rpt_author,
+            revision=rpt_revision,
+            include_plots=rpt_include_plots,
+        )
+
+        # Collect results dict
+        results_dict = {}
+        assembly_info = None
+        capability_results = None
+        plot_images = []
+        spec_limits_dict = None
+
+        if rpt_source == "Tolerance Stack (Tab 1)":
+            # Re-run analysis if we have contributors
+            ts_contribs = st.session_state.get("ts_contributors", [])
+            if ts_contribs:
+                from tolerance_stack.models import Contributor, ToleranceStack, Distribution, ContributorType
+                from tolerance_stack.analysis import analyze_stack
+
+                stack = ToleranceStack(name=st.session_state.get("ts_name", "Stack"))
+                for c in ts_contribs:
+                    stack.add(Contributor(
+                        name=c["name"], nominal=c["nominal"],
+                        plus_tol=c["plus_tol"], minus_tol=c["minus_tol"],
+                        direction=tuple(c["direction"]), sign=c["sign"],
+                        distribution=Distribution(c["distribution"]),
+                        contributor_type=ContributorType(c.get("contributor_type", "linear")),
+                        sigma=c.get("sigma", 3.0),
+                    ))
+                ana_results = analyze_stack(stack, methods=["wc", "rss", "mc"], sigma=3.0, mc_samples=100000, mc_seed=42)
+                for k, v in ana_results.items():
+                    results_dict[k] = {
+                        "method": k,
+                        "nominal": v.nominal,
+                        "variation": v.variation,
+                        "sensitivity": v.sensitivity,
+                    }
+                    if v.mc_mean is not None:
+                        results_dict[k]["mc_mean"] = v.mc_mean
+                        results_dict[k]["mc_std"] = v.mc_std
+            else:
+                st.warning("No tolerance stack contributors defined in Tab 1.")
+                results_dict = {"info": "No data"}
+
+        elif rpt_source == "Assembly (Tab 3)":
+            ad = st.session_state.get("assy_data")
+            if ad and ad.get("measurement"):
+                from tolerance_stack.assembly import Assembly
+                from tolerance_stack.assembly_analysis import analyze_assembly
+                with tempfile.NamedTemporaryFile(suffix=".json", delete=False, mode="w") as f:
+                    json.dump(ad, f)
+                    f.flush()
+                    assy_obj = Assembly.load(f.name)
+                ana_results = analyze_assembly(assy_obj, methods=["wc", "rss", "mc"], sigma=3.0, mc_samples=100000, mc_seed=42)
+                assembly_info = {
+                    "name": ad.get("name", "Assembly"),
+                    "bodies": len(ad.get("bodies", [])),
+                    "mates": len(ad.get("mates", [])),
+                }
+                for k, v in ana_results.items():
+                    results_dict[k] = {
+                        "method": k,
+                        "nominal": v.nominal,
+                        "variation": v.variation,
+                        "sensitivity": v.sensitivity,
+                    }
+                    if v.mc_mean is not None:
+                        results_dict[k]["mc_mean"] = v.mc_mean
+                        results_dict[k]["mc_std"] = v.mc_std
+            else:
+                st.warning("No assembly with measurement defined in Tab 3.")
+                results_dict = {"info": "No data"}
+
+        elif rpt_source == "Manual input":
+            try:
+                results_dict = {"manual": json.loads(rpt_manual)}
+            except json.JSONDecodeError as e:
+                st.error(f"Invalid JSON: {e}")
+                results_dict = {"error": str(e)}
+
+        if rpt_format == "APQP (HTML)":
+            spec_limits_dict = {}
+            if hasattr(st.session_state, "rpt_usl") or "rpt_usl" in st.session_state:
+                usl_v = st.session_state.get("rpt_usl", 0)
+                lsl_v = st.session_state.get("rpt_lsl", 0)
+                if usl_v != 0 or lsl_v != 0:
+                    spec_limits_dict["measurement"] = {}
+                    if usl_v != 0:
+                        spec_limits_dict["measurement"]["usl"] = usl_v
+                    if lsl_v != 0:
+                        spec_limits_dict["measurement"]["lsl"] = lsl_v
+
+        # Generate report
+        if rpt_format == "HTML":
+            html = generate_html_report(config, results_dict, assembly_info=assembly_info,
+                                        capability_results=capability_results, plot_images=plot_images)
+            st.download_button("Download HTML Report", data=html,
+                               file_name="tolerance_report.html", mime="text/html", key="rpt_dl_html")
+            st.success("HTML report generated!")
+            with st.expander("Preview"):
+                st.components.v1.html(html, height=600, scrolling=True)
+
+        elif rpt_format == "APQP (HTML)":
+            html = generate_apqp_report(config, results_dict, assembly_info=assembly_info,
+                                        capability_results=capability_results,
+                                        plot_images=plot_images,
+                                        spec_limits=spec_limits_dict)
+            st.download_button("Download APQP Report", data=html,
+                               file_name="apqp_report.html", mime="text/html", key="rpt_dl_apqp")
+            st.success("APQP report generated!")
+            with st.expander("Preview"):
+                st.components.v1.html(html, height=600, scrolling=True)
+
+        elif rpt_format == "Plain Text":
+            text = generate_text_report(config, results_dict, capability_results=capability_results)
+            st.download_button("Download Text Report", data=text,
+                               file_name="tolerance_report.txt", mime="text/plain", key="rpt_dl_txt")
+            st.success("Text report generated!")
+            st.text(text)
+
+
+# ===================================================================
 # Sidebar info
 # ===================================================================
 
 with st.sidebar:
     st.markdown("### About")
     st.markdown("""
-    **3D Tolerance Stack Analyzer** supports three levels of analysis:
+    **3D Tolerance Stack Analyzer** supports:
 
-    1. **Tolerance Stack** — Linear dimension chains with 3D direction vectors
-    2. **Linkage** — Kinematic chains of joints and links
-    3. **Assembly** — Rigid bodies with geometric features and mates
+    1. **Tolerance Stack** -- Linear dimension chains with 3D direction vectors
+    2. **Linkage** -- Kinematic chains of joints and links
+    3. **Assembly** -- Rigid bodies with geometric features, mates, and GD&T
+    4. **DOE / Optimizer** -- Design of Experiments and tolerance optimization
+    5. **Reports** -- HTML, APQP-compliant, and text report generation
 
-    Each supports **Worst-Case**, **RSS**, and **Monte Carlo** analysis.
+    Each analysis supports **Worst-Case**, **RSS**, and **Monte Carlo** methods.
+    """)
+    st.markdown("---")
+    st.markdown("**Features**")
+    st.markdown("""
+    - 9 statistical distributions (Normal, Uniform, Triangular, Weibull, Lognormal, Rayleigh, Bimodal)
+    - Process capability metrics (Cp/Cpk/Pp/Ppk/PPM)
+    - Full GD&T per ASME Y14.5 (position, profile, runout, MMC/LMC)
+    - Datum reference frames and DOF tracking
+    - STEP file import with PMI extraction
+    - Tolerance optimization and DOE (HLM, Full Factorial)
+    - APQP-compliant report generation
+    - Gap, flush, and interference measurements
     """)
     st.markdown("---")
     st.markdown("**Analysis Methods**")
     st.markdown("""
     - **Worst-Case**: Every tolerance at its extreme simultaneously
-    - **RSS**: Statistical root-sum-of-squares (normal distribution)
+    - **RSS**: Statistical root-sum-of-squares
     - **Monte Carlo**: Numerical simulation with configurable distributions
     """)
     st.markdown("---")

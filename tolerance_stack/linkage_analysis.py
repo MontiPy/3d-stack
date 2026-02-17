@@ -327,15 +327,8 @@ def _sample(
     n: int,
 ) -> np.ndarray:
     """Generate n samples from the given distribution."""
-    if distribution == Distribution.NORMAL:
-        std = half / sigma
-        return rng.normal(loc=center, scale=std, size=n)
-    elif distribution == Distribution.UNIFORM:
-        return rng.uniform(low=center - half, high=center + half, size=n)
-    elif distribution == Distribution.TRIANGULAR:
-        return rng.triangular(left=center - half, mode=center, right=center + half, size=n)
-    else:
-        raise ValueError(f"Unknown distribution: {distribution}")
+    from tolerance_stack.statistics import sample_distribution
+    return sample_distribution(rng, distribution, center, half, sigma, n)
 
 
 # ---------------------------------------------------------------------------

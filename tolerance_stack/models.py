@@ -15,6 +15,12 @@ class Distribution(Enum):
     NORMAL = "normal"
     UNIFORM = "uniform"
     TRIANGULAR = "triangular"
+    WEIBULL_RIGHT = "weibull_right"   # Right-skewed Weibull
+    WEIBULL_LEFT = "weibull_left"     # Left-skewed Weibull
+    LOGNORMAL = "lognormal"
+    RAYLEIGH = "rayleigh"             # Radial/circular tolerance
+    BIMODAL = "bimodal"               # Peaks at min/max extremes
+    EMPIRICAL = "empirical"           # User-defined from data file
 
 
 class ContributorType(Enum):

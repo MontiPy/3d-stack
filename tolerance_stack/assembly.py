@@ -46,6 +46,9 @@ from typing import Optional
 import numpy as np
 
 from tolerance_stack.models import Distribution
+from tolerance_stack.gdt import (
+    FeatureControlFrame, DatumReferenceFrame, GDTType, MaterialCondition,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -101,9 +104,16 @@ class MateType(Enum):
 
 class MeasurementType(Enum):
     """What to measure between two features."""
-    DISTANCE = "distance"             # Point-to-point or feature-to-feature distance
-    DISTANCE_ALONG = "distance_along" # Distance projected onto a direction
-    ANGLE = "angle"                   # Angle between two directions
+    DISTANCE = "distance"               # Point-to-point or feature-to-feature distance
+    DISTANCE_ALONG = "distance_along"   # Distance projected onto a direction
+    ANGLE = "angle"                     # Angle between two directions
+    POINT_TO_PLANE = "point_to_plane"   # Signed distance from point to plane
+    POINT_TO_LINE = "point_to_line"     # Minimum distance from point to line/axis
+    PLANE_TO_PLANE_ANGLE = "plane_to_plane_angle"  # Angle between two plane normals
+    LINE_TO_PLANE_ANGLE = "line_to_plane_angle"    # Angle between line and plane
+    GAP = "gap"                         # Signed gap along surface normal (positive = gap)
+    FLUSH = "flush"                     # Surface flush/offset along normal
+    INTERFERENCE = "interference"       # Negative gap (collision detection)
 
 
 # ---------------------------------------------------------------------------
@@ -139,6 +149,14 @@ class Feature:
     position_tol_direction: Optional[tuple[float, float, float]] = None
     distribution: Distribution = Distribution.NORMAL
     sigma: float = 3.0
+    # GD&T feature control frames
+    feature_control_frames: list = field(default_factory=list)
+    # Size tolerances for MMC/LMC bonus calculations
+    size_nominal: float = 0.0
+    size_plus_tol: float = 0.0
+    size_minus_tol: float = 0.0
+    # Datum label (if this feature is a datum)
+    datum_label: Optional[str] = None
 
     def __post_init__(self) -> None:
         d = np.array(self.direction, dtype=float)
@@ -148,7 +166,8 @@ class Feature:
 
     @property
     def has_tolerance(self) -> bool:
-        return self.position_tol > 0 or self.orientation_tol > 0 or self.form_tol > 0
+        return (self.position_tol > 0 or self.orientation_tol > 0
+                or self.form_tol > 0 or len(self.feature_control_frames) > 0)
 
     def world_origin(self, body_transform: np.ndarray) -> np.ndarray:
         """Feature origin in world coordinates given the body's 4x4 transform."""
@@ -159,6 +178,10 @@ class Feature:
         """Feature direction in world coordinates (rotation only)."""
         d = np.array(self.direction, dtype=float)
         return body_transform[:3, :3] @ d
+
+    def add_fcf(self, fcf: FeatureControlFrame) -> None:
+        """Add a GD&T Feature Control Frame to this feature."""
+        self.feature_control_frames.append(fcf)
 
     def to_dict(self) -> dict:
         d = {
@@ -172,9 +195,16 @@ class Feature:
             "form_tol": self.form_tol,
             "distribution": self.distribution.value,
             "sigma": self.sigma,
+            "size_nominal": self.size_nominal,
+            "size_plus_tol": self.size_plus_tol,
+            "size_minus_tol": self.size_minus_tol,
         }
         if self.position_tol_direction is not None:
             d["position_tol_direction"] = list(self.position_tol_direction)
+        if self.feature_control_frames:
+            d["feature_control_frames"] = [fcf.to_dict() for fcf in self.feature_control_frames]
+        if self.datum_label is not None:
+            d["datum_label"] = self.datum_label
         return d
 
     @classmethod
@@ -182,7 +212,7 @@ class Feature:
         ptd = d.get("position_tol_direction")
         if ptd is not None:
             ptd = tuple(ptd)
-        return cls(
+        feat = cls(
             name=d["name"],
             feature_type=FeatureType(d["feature_type"]),
             origin=tuple(d.get("origin", [0, 0, 0])),
@@ -194,7 +224,14 @@ class Feature:
             position_tol_direction=ptd,
             distribution=Distribution(d.get("distribution", "normal")),
             sigma=d.get("sigma", 3.0),
+            size_nominal=d.get("size_nominal", 0.0),
+            size_plus_tol=d.get("size_plus_tol", 0.0),
+            size_minus_tol=d.get("size_minus_tol", 0.0),
+            datum_label=d.get("datum_label"),
         )
+        for fcf_d in d.get("feature_control_frames", []):
+            feat.add_fcf(FeatureControlFrame.from_dict(fcf_d))
+        return feat
 
 
 # ---------------------------------------------------------------------------
@@ -480,6 +517,56 @@ class Assembly:
             cos_angle = np.clip(np.dot(dir_a, dir_b), -1.0, 1.0)
             return float(np.degrees(np.arccos(cos_angle)))
 
+        elif meas.measurement_type == MeasurementType.POINT_TO_PLANE:
+            # Feature A = point, Feature B = plane.
+            # Signed distance from point to plane.
+            dir_b = self._feature_world_dir(meas.body_b, meas.feature_b,
+                                             body_transforms, fao)
+            return float(np.dot(pos_a - pos_b, dir_b))
+
+        elif meas.measurement_type == MeasurementType.POINT_TO_LINE:
+            # Feature A = point, Feature B = axis/line.
+            # Minimum distance from point to infinite line.
+            dir_b = self._feature_world_dir(meas.body_b, meas.feature_b,
+                                             body_transforms, fao)
+            diff = pos_a - pos_b
+            proj = np.dot(diff, dir_b) * dir_b
+            perp = diff - proj
+            return float(np.linalg.norm(perp))
+
+        elif meas.measurement_type == MeasurementType.PLANE_TO_PLANE_ANGLE:
+            # Angle between two plane normals.
+            dir_a = self._feature_world_dir(meas.body_a, meas.feature_a,
+                                             body_transforms, fao)
+            dir_b = self._feature_world_dir(meas.body_b, meas.feature_b,
+                                             body_transforms, fao)
+            cos_angle = np.clip(np.dot(dir_a, dir_b), -1.0, 1.0)
+            return float(np.degrees(np.arccos(abs(cos_angle))))
+
+        elif meas.measurement_type == MeasurementType.LINE_TO_PLANE_ANGLE:
+            # Angle between a line direction and a plane (complement of angle to normal).
+            dir_a = self._feature_world_dir(meas.body_a, meas.feature_a,
+                                             body_transforms, fao)
+            dir_b = self._feature_world_dir(meas.body_b, meas.feature_b,
+                                             body_transforms, fao)
+            sin_angle = abs(np.dot(dir_a, dir_b))
+            sin_angle = np.clip(sin_angle, 0.0, 1.0)
+            return float(np.degrees(np.arcsin(sin_angle)))
+
+        elif meas.measurement_type in (MeasurementType.GAP, MeasurementType.FLUSH):
+            # Gap/Flush: signed distance along the surface normal of feature A.
+            dir_a = self._feature_world_dir(meas.body_a, meas.feature_a,
+                                             body_transforms, fao)
+            gap = float(np.dot(pos_b - pos_a, dir_a))
+            return gap
+
+        elif meas.measurement_type == MeasurementType.INTERFERENCE:
+            # Interference: negative of gap (positive = collision).
+            dir_a = self._feature_world_dir(meas.body_a, meas.feature_a,
+                                             body_transforms, fao)
+            gap = float(np.dot(pos_b - pos_a, dir_a))
+            return -gap
+
         raise ValueError(f"Unknown measurement type: {meas.measurement_type}")
 
     def _compute_body_transforms(
@@ -620,6 +707,14 @@ class Assembly:
                             "sigma": feat.sigma,
                             "distribution": feat.distribution,
                         })
+
+                # GD&T Feature Control Frames
+                from tolerance_stack.gdt import fcf_to_tolerance_parameters
+                for fcf in feat.feature_control_frames:
+                    fcf_params = fcf_to_tolerance_parameters(
+                        fcf, bname, fname, feat.direction, feat.sigma,
+                    )
+                    params.extend(fcf_params)
 
         for mate in self.mates:
             if mate.has_tolerance:

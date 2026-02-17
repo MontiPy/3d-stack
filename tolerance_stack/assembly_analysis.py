@@ -255,16 +255,8 @@ def assembly_monte_carlo(
         sigma = p["sigma"]
         dist = p["distribution"]
 
-        if dist == Distribution.NORMAL:
-            std = half / sigma
-            samples = rng.normal(loc=center, scale=std, size=n_samples)
-        elif dist == Distribution.UNIFORM:
-            samples = rng.uniform(low=center - half, high=center + half, size=n_samples)
-        elif dist == Distribution.TRIANGULAR:
-            samples = rng.triangular(left=center - half, mode=center,
-                                      right=center + half, size=n_samples)
-        else:
-            raise ValueError(f"Unknown distribution: {dist}")
+        from tolerance_stack.statistics import sample_distribution
+        samples = sample_distribution(rng, dist, center, half, sigma, n_samples)
 
         param_samples[p["name"]] = samples
 

@@ -265,19 +265,8 @@ def monte_carlo(
         center = c.nominal + shift
 
         # Generate samples for this contributor
-        if c.distribution == Distribution.NORMAL:
-            std = half / c.sigma
-            samples = rng.normal(loc=center, scale=std, size=n_samples)
-        elif c.distribution == Distribution.UNIFORM:
-            lo = center - half
-            hi = center + half
-            samples = rng.uniform(low=lo, high=hi, size=n_samples)
-        elif c.distribution == Distribution.TRIANGULAR:
-            lo = center - half
-            hi = center + half
-            samples = rng.triangular(left=lo, mode=center, right=hi, size=n_samples)
-        else:
-            raise ValueError(f"Unknown distribution: {c.distribution}")
+        from tolerance_stack.statistics import sample_distribution
+        samples = sample_distribution(rng, c.distribution, center, half, c.sigma, n_samples)
 
         gap_samples += sens * samples
 

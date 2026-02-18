@@ -1,0 +1,84 @@
+{
+  "type": "linkage",
+  "name": "Four-Bar Mechanism Path",
+  "description": "Open-chain path through a four-bar linkage coupler point",
+  "joints": [
+    {
+      "name": "Crank Pivot",
+      "joint_type": "revolute_z",
+      "nominal": 60.0,
+      "plus_tol": 0.3,
+      "minus_tol": 0.3,
+      "distribution": "normal",
+      "sigma": 3.0
+    },
+    {
+      "name": "Coupler Joint",
+      "joint_type": "revolute_z",
+      "nominal": -20.0,
+      "plus_tol": 0.4,
+      "minus_tol": 0.4,
+      "distribution": "normal",
+      "sigma": 3.0
+    },
+    {
+      "name": "Output Joint",
+      "joint_type": "revolute_z",
+      "nominal": 15.0,
+      "plus_tol": 0.3,
+      "minus_tol": 0.3,
+      "distribution": "normal",
+      "sigma": 3.0
+    },
+    {
+      "name": "End",
+      "joint_type": "fixed",
+      "nominal": 0.0,
+      "plus_tol": 0.0,
+      "minus_tol": 0.0,
+      "distribution": "normal",
+      "sigma": 3.0
+    }
+  ],
+  "links": [
+    {
+      "name": "Crank",
+      "length": 60.0,
+      "plus_tol": 0.05,
+      "minus_tol": 0.05,
+      "direction": [
+        1.0,
+        0.0,
+        0.0
+      ],
+      "distribution": "normal",
+      "sigma": 3.0
+    },
+    {
+      "name": "Coupler",
+      "length": 120.0,
+      "plus_tol": 0.1,
+      "minus_tol": 0.1,
+      "direction": [
+        1.0,
+        0.0,
+        0.0
+      ],
+      "distribution": "normal",
+      "sigma": 3.0
+    },
+    {
+      "name": "Rocker",
+      "length": 90.0,
+      "plus_tol": 0.08,
+      "minus_tol": 0.08,
+      "direction": [
+        1.0,
+        0.0,
+        0.0
+      ],
+      "distribution": "normal",
+      "sigma": 3.0
+    }
+  ]
+}

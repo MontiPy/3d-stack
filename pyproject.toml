@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.backends._legacy:_Backend"
+
+[project]
+name = "tolerance-stack-3d"
+version = "0.6.0"
+description = "3D tolerance stack analysis with Worst-Case, RSS, and Monte Carlo methods. Full GD&T, DOE, Sobol' sensitivity, GA optimization, contingency analysis, STEP import, 3D visualization, and APQP reporting."
+requires-python = ">=3.9"
+dependencies = [
+    "numpy>=1.24",
+    "matplotlib>=3.7",
+    "scipy>=1.10",
+]
+
+[project.optional-dependencies]
+gui = ["streamlit>=1.30", "plotly>=5.15"]
+dev = ["pytest>=7.0"]
+cad = ["pythonocc-core>=7.7"]
+viz = ["plotly>=5.15"]
+
+[project.scripts]
+tolstack = "tolerance_stack.cli:main"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

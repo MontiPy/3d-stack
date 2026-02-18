@@ -1,0 +1,206 @@
+{
+  "type": "assembly",
+  "name": "Pin-in-Hole Assembly",
+  "description": "Gap between block top face and pin head bottom face",
+  "bodies": [
+    {
+      "name": "Block",
+      "description": "Block with a bore hole",
+      "features": [
+        {
+          "name": "bottom_face",
+          "feature_type": "plane",
+          "origin": [
+            0,
+            0,
+            0
+          ],
+          "direction": [
+            0.0,
+            0.0,
+            -1.0
+          ],
+          "radius": 0.0,
+          "position_tol": 0.0,
+          "orientation_tol": 0.0,
+          "form_tol": 0.0,
+          "distribution": "normal",
+          "sigma": 3.0
+        },
+        {
+          "name": "top_face",
+          "feature_type": "plane",
+          "origin": [
+            0,
+            0,
+            50
+          ],
+          "direction": [
+            0.0,
+            0.0,
+            1.0
+          ],
+          "radius": 0.0,
+          "position_tol": 0.05,
+          "orientation_tol": 0.0,
+          "form_tol": 0.0,
+          "distribution": "normal",
+          "sigma": 3.0
+        },
+        {
+          "name": "bore_axis",
+          "feature_type": "cylinder",
+          "origin": [
+            0,
+            0,
+            0
+          ],
+          "direction": [
+            0.0,
+            0.0,
+            1.0
+          ],
+          "radius": 5.025,
+          "position_tol": 0.03,
+          "orientation_tol": 0.0,
+          "form_tol": 0.0,
+          "distribution": "normal",
+          "sigma": 3.0
+        }
+      ],
+      "placement_origin": [
+        0,
+        0,
+        0
+      ],
+      "placement_rotation": [
+        0,
+        0,
+        0
+      ]
+    },
+    {
+      "name": "Pin",
+      "description": "Pin with shaft and head",
+      "features": [
+        {
+          "name": "shaft_bottom",
+          "feature_type": "point",
+          "origin": [
+            0,
+            0,
+            0
+          ],
+          "direction": [
+            0.0,
+            0.0,
+            -1.0
+          ],
+          "radius": 0.0,
+          "position_tol": 0.0,
+          "orientation_tol": 0.0,
+          "form_tol": 0.0,
+          "distribution": "normal",
+          "sigma": 3.0
+        },
+        {
+          "name": "shaft_axis",
+          "feature_type": "cylinder",
+          "origin": [
+            0,
+            0,
+            0
+          ],
+          "direction": [
+            0.0,
+            0.0,
+            1.0
+          ],
+          "radius": 5.0,
+          "position_tol": 0.02,
+          "orientation_tol": 0.0,
+          "form_tol": 0.0,
+          "distribution": "normal",
+          "sigma": 3.0
+        },
+        {
+          "name": "head_bottom",
+          "feature_type": "plane",
+          "origin": [
+            0,
+            0,
+            45
+          ],
+          "direction": [
+            0.0,
+            0.0,
+            -1.0
+          ],
+          "radius": 0.0,
+          "position_tol": 0.04,
+          "orientation_tol": 0.0,
+          "form_tol": 0.0,
+          "distribution": "normal",
+          "sigma": 3.0
+        },
+        {
+          "name": "head_top",
+          "feature_type": "plane",
+          "origin": [
+            0,
+            0,
+            53
+          ],
+          "direction": [
+            0.0,
+            0.0,
+            1.0
+          ],
+          "radius": 0.0,
+          "position_tol": 0.04,
+          "orientation_tol": 0.0,
+          "form_tol": 0.0,
+          "distribution": "normal",
+          "sigma": 3.0
+        }
+      ],
+      "placement_origin": [
+        0,
+        0,
+        0
+      ],
+      "placement_rotation": [
+        0,
+        0,
+        0
+      ]
+    }
+  ],
+  "mates": [
+    {
+      "name": "bore-shaft",
+      "body_a": "Block",
+      "feature_a": "bore_axis",
+      "body_b": "Pin",
+      "feature_b": "shaft_axis",
+      "mate_type": "coaxial",
+      "distance": 0.0,
+      "distance_tol": 0.0,
+      "distribution": "normal",
+      "sigma": 3.0
+    }
+  ],
+  "measurement": {
+    "name": "gap",
+    "body_a": "Block",
+    "feature_a": "top_face",
+    "body_b": "Pin",
+    "feature_b": "head_bottom",
+    "measurement_type": "distance_along",
+    "direction": [
+      0,
+      0,
+      -1
+    ]
+  }
+}

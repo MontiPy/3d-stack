@@ -1,0 +1,87 @@
+{
+  "name": "Angled Bracket Assembly",
+  "description": "Clearance gap at bracket tip, closure along X",
+  "closure_direction": [
+    1.0,
+    0.0,
+    0.0
+  ],
+  "gap_nominal": null,
+  "contributors": [
+    {
+      "name": "Base plate width",
+      "nominal": 100.0,
+      "plus_tol": 0.15,
+      "minus_tol": 0.15,
+      "direction": [
+        1.0,
+        0.0,
+        0.0
+      ],
+      "sign": 1,
+      "distribution": "normal",
+      "contributor_type": "linear",
+      "sigma": 3.0
+    },
+    {
+      "name": "Angled strut length",
+      "nominal": 30.0,
+      "plus_tol": 0.1,
+      "minus_tol": 0.1,
+      "direction": [
+        0.7071067811865476,
+        0.0,
+        0.7071067811865475
+      ],
+      "sign": -1,
+      "distribution": "normal",
+      "contributor_type": "linear",
+      "sigma": 3.0
+    },
+    {
+      "name": "Vertical spacer",
+      "nominal": 15.0,
+      "plus_tol": 0.05,
+      "minus_tol": 0.05,
+      "direction": [
+        0.0,
+        0.0,
+        1.0
+      ],
+      "sign": -1,
+      "distribution": "normal",
+      "contributor_type": "linear",
+      "sigma": 3.0
+    },
+    {
+      "name": "Top cap width",
+      "nominal": 70.0,
+      "plus_tol": 0.12,
+      "minus_tol": 0.12,
+      "direction": [
+        1.0,
+        0.0,
+        0.0
+      ],
+      "sign": -1,
+      "distribution": "normal",
+      "contributor_type": "linear",
+      "sigma": 3.0
+    },
+    {
+      "name": "Mount surface angle",
+      "nominal": 5.0,
+      "plus_tol": 0.5,
+      "minus_tol": 0.5,
+      "direction": [
+        0.9848077530122081,
+        0.17364817766693036,
+        0.0
+      ],
+      "sign": 1,
+      "distribution": "normal",
+      "contributor_type": "angular",
+      "sigma": 3.0
+    }
+  ]
+}

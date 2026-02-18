@@ -1,0 +1,166 @@
+{
+  "type": "assembly",
+  "name": "Bracket Assembly",
+  "description": "L-bracket bolted to base, measuring target hole position",
+  "bodies": [
+    {
+      "name": "Base",
+      "description": "Flat base plate",
+      "features": [
+        {
+          "name": "surface",
+          "feature_type": "plane",
+          "origin": [
+            0,
+            0,
+            0
+          ],
+          "direction": [
+            0.0,
+            0.0,
+            1.0
+          ],
+          "radius": 0.0,
+          "position_tol": 0.0,
+          "orientation_tol": 0.0,
+          "form_tol": 0.0,
+          "distribution": "normal",
+          "sigma": 3.0
+        },
+        {
+          "name": "bolt_hole",
+          "feature_type": "cylinder",
+          "origin": [
+            50,
+            0,
+            0
+          ],
+          "direction": [
+            0.0,
+            0.0,
+            1.0
+          ],
+          "radius": 4.0,
+          "position_tol": 0.05,
+          "orientation_tol": 0.0,
+          "form_tol": 0.0,
+          "distribution": "normal",
+          "sigma": 3.0
+        },
+        {
+          "name": "datum_edge",
+          "feature_type": "point",
+          "origin": [
+            0,
+            0,
+            0
+          ],
+          "direction": [
+            0.0,
+            0.0,
+            1.0
+          ],
+          "radius": 0.0,
+          "position_tol": 0.0,
+          "orientation_tol": 0.0,
+          "form_tol": 0.0,
+          "distribution": "normal",
+          "sigma": 3.0
+        }
+      ],
+      "placement_origin": [
+        0,
+        0,
+        0
+      ],
+      "placement_rotation": [
+        0,
+        0,
+        0
+      ]
+    },
+    {
+      "name": "Bracket",
+      "description": "L-bracket with target hole",
+      "features": [
+        {
+          "name": "bolt_hole",
+          "feature_type": "cylinder",
+          "origin": [
+            0,
+            0,
+            0
+          ],
+          "direction": [
+            0.0,
+            0.0,
+            1.0
+          ],
+          "radius": 4.1,
+          "position_tol": 0.04,
+          "orientation_tol": 0.0,
+          "form_tol": 0.0,
+          "distribution": "normal",
+          "sigma": 3.0
+        },
+        {
+          "name": "target_hole",
+          "feature_type": "cylinder",
+          "origin": [
+            0,
+            0,
+            80
+          ],
+          "direction": [
+            1.0,
+            0.0,
+            0.0
+          ],
+          "radius": 3.0,
+          "position_tol": 0.1,
+          "orientation_tol": 0.5,
+          "form_tol": 0.0,
+          "distribution": "normal",
+          "sigma": 3.0
+        }
+      ],
+      "placement_origin": [
+        50,
+        0,
+        0
+      ],
+      "placement_rotation": [
+        0,
+        0,
+        0
+      ]
+    }
+  ],
+  "mates": [
+    {
+      "name": "bolt",
+      "body_a": "Base",
+      "feature_a": "bolt_hole",
+      "body_b": "Bracket",
+      "feature_b": "bolt_hole",
+      "mate_type": "coaxial",
+      "distance": 0.0,
+      "distance_tol": 0.0,
+      "distribution": "normal",
+      "sigma": 3.0
+    }
+  ],
+  "measurement": {
+    "name": "target_position_x",
+    "body_a": "Base",
+    "feature_a": "datum_edge",
+    "body_b": "Bracket",
+    "feature_b": "target_hole",
+    "measurement_type": "distance_along",
+    "direction": [
+      1,
+      0,
+      0
+    ]
+  }
+}

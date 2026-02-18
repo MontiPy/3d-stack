@@ -440,6 +440,98 @@ def import_step(path: str, assembly_name: Optional[str] = None) -> StepImportRes
     return result
 
 
+def import_step_multi(
+    paths: list[str],
+    assembly_name: Optional[str] = None,
+) -> StepImportResult:
+    """Import multiple STEP files and merge them into a single Assembly.
+
+    Each STEP file becomes one or more bodies in the combined assembly.
+    After import, users can define mates between features from different
+    files and set a measurement for tolerance analysis.
+
+    Args:
+        paths: List of paths to STEP (.stp/.step) files.
+        assembly_name: Optional name for the combined assembly.
+
+    Returns:
+        StepImportResult with merged data from all files.
+    """
+    combined = StepImportResult(
+        file_path=", ".join(os.path.basename(p) for p in paths),
+    )
+    name = assembly_name or "Multi-Part Assembly"
+    assy = Assembly(name=name)
+
+    for path in paths:
+        part_result = import_step(path)
+        combined.n_entities += part_result.n_entities
+        combined.products.extend(part_result.products)
+        combined.features.extend(part_result.features)
+        combined.gdt_callouts.extend(part_result.gdt_callouts)
+        combined.warnings.extend(part_result.warnings)
+
+        if part_result.assembly:
+            for bp_name, bp in part_result.assembly.bodies.items():
+                body_name = bp.body.name
+                # Avoid duplicate body names across files
+                if body_name in assy.bodies:
+                    stem = os.path.splitext(os.path.basename(path))[0]
+                    body_name = f"{body_name}_{stem}"
+                    bp.body.name = body_name
+                try:
+                    origin = bp.origin
+                    rotation = bp.rotation
+                    # Handle both tuple and ndarray origins
+                    if hasattr(origin, 'tolist'):
+                        origin = tuple(origin.tolist())
+                    if hasattr(rotation, 'tolist'):
+                        rotation = tuple(rotation.tolist())
+                    assy.add_body(bp.body, origin=origin, rotation=rotation)
+                except (ValueError, AttributeError) as exc:
+                    combined.warnings.append(
+                        f"Could not add body '{body_name}' from {os.path.basename(path)}: {exc}"
+                    )
+        else:
+            # No assembly produced — create a body from the filename
+            stem = os.path.splitext(os.path.basename(path))[0]
+            body = Body(name=stem)
+            for feat_info in part_result.features:
+                feat = Feature(
+                    name=feat_info["name"],
+                    feature_type=feat_info["feature_type"],
+                    origin=feat_info.get("origin", (0, 0, 0)),
+                    direction=feat_info.get("direction", (0, 0, 1)),
+                    radius=feat_info.get("radius", 0.0),
+                )
+                for gdt in part_result.gdt_callouts:
+                    fcf = FeatureControlFrame(
+                        name=f"gdt_{gdt['entity_id']}",
+                        gdt_type=gdt["gdt_type"],
+                        tolerance_value=gdt["tolerance_value"],
+                        datum_refs=gdt.get("datum_refs", []),
+                    )
+                    feat.add_fcf(fcf)
+                try:
+                    body.add_feature(feat)
+                except ValueError:
+                    pass
+            if body.features:
+                if body.name in assy.bodies:
+                    body.name = f"{body.name}_{len(assy.bodies)}"
+                try:
+                    assy.add_body(body)
+                except ValueError:
+                    combined.warnings.append(
+                        f"Could not add body '{body.name}' from {os.path.basename(path)}"
+                    )
+
+    if assy.bodies:
+        combined.assembly = assy
+
+    return combined
+
+
 def import_step_pmi(path: str) -> list[FeatureControlFrame]:
     """Import just the PMI (GD&T) callouts from a STEP file.
 

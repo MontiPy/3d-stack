@@ -532,117 +532,426 @@ with tab_linkage:
 # TAB 3: Assembly
 # ===================================================================
 
+# --- Helper: collect body.feature pairs from assy_data ---
+def _body_feature_options(assy_data):
+    """Return list of 'Body.Feature' strings and a lookup dict."""
+    options = []
+    lookup = {}  # "Body.Feature" -> (body_name, feature_name)
+    if assy_data:
+        for bd in assy_data.get("bodies", []):
+            for feat in bd.get("features", []):
+                label = f"{bd['name']}.{feat['name']}"
+                options.append(label)
+                lookup[label] = (bd["name"], feat["name"])
+    return options, lookup
+
+
 with tab_assembly:
     st.header("3D Rigid Body Assembly")
-    st.markdown("Define bodies with geometric features and mating conditions. Measure distances or angles between features.")
+    st.markdown(
+        "Upload a STEP file or load an example, then edit feature tolerances, "
+        "add mates between features, define a measurement, and run analysis."
+    )
 
     col_def3, col_results3 = st.columns([1, 1])
 
     with col_def3:
-        st.subheader("Assembly Definition")
+        st.subheader("1. Import Geometry")
         assy_name = st.text_input("Assembly name", "My Assembly", key="assy_name")
 
-        # --- Upload JSON ---
-        assy_uploaded = st.file_uploader("Or load from JSON", type=["json"], key="assy_upload")
-        if assy_uploaded is not None:
-            try:
-                data = json.loads(assy_uploaded.read())
-                if "bodies" in data:
-                    st.session_state["assy_data"] = data
-                    st.success(f"Loaded assembly: {data.get('name', 'unknown')}")
-            except Exception as e:
-                st.error(f"Failed to load: {e}")
+        import_method = st.radio(
+            "Import source",
+            ["STEP file upload", "JSON file upload", "Load example", "Build manually"],
+            horizontal=True, key="assy_import_method",
+        )
 
-        # --- STEP file import ---
-        with st.expander("Import from STEP file"):
-            step_uploaded = st.file_uploader("Upload STEP file (.stp/.step)", type=["stp", "step"], key="step_upload")
-            if step_uploaded is not None and st.button("Import STEP", key="step_import_btn"):
-                from tolerance_stack.step_import import import_step
-                with tempfile.NamedTemporaryFile(suffix=".stp", delete=False, mode="wb") as tf:
-                    tf.write(step_uploaded.read())
-                    tf.flush()
-                    step_result = import_step(tf.name, assembly_name=assy_name)
+        if import_method == "STEP file upload":
+            step_files = st.file_uploader(
+                "Upload STEP files (.stp / .step) -- select one or more",
+                type=["stp", "step"], key="step_upload",
+                accept_multiple_files=True,
+            )
+            if step_files and st.button("Import STEP", key="step_import_btn"):
+                from tolerance_stack.step_import import import_step, import_step_multi
+                # Write uploaded files to temp paths
+                temp_paths = []
+                for sf in step_files:
+                    with tempfile.NamedTemporaryFile(
+                        suffix=".stp", delete=False, mode="wb",
+                        prefix=sf.name.rsplit(".", 1)[0] + "_",
+                    ) as tf:
+                        tf.write(sf.read())
+                        tf.flush()
+                        temp_paths.append(tf.name)
+
+                if len(temp_paths) == 1:
+                    step_result = import_step(temp_paths[0], assembly_name=assy_name)
+                else:
+                    step_result = import_step_multi(temp_paths, assembly_name=assy_name)
+
                 st.text(step_result.summary())
+                if step_result.warnings:
+                    for w in step_result.warnings:
+                        st.warning(w)
                 if step_result.assembly:
                     with tempfile.NamedTemporaryFile(suffix=".json", delete=False, mode="w") as jf:
                         step_result.assembly.save(jf.name)
                         with open(jf.name) as rf:
                             st.session_state["assy_data"] = json.load(rf)
-                    st.success(f"Assembly imported: {len(step_result.assembly.bodies)} bodies")
+                    n_bodies = len(step_result.assembly.bodies)
+                    n_files = len(temp_paths)
+                    st.success(
+                        f"Imported {n_bodies} bodies from {n_files} file(s), "
+                        f"{len(step_result.features)} features, "
+                        f"{len(step_result.gdt_callouts)} GD&T callouts"
+                    )
                     st.rerun()
                 else:
-                    st.warning("Could not construct assembly from STEP file.")
+                    st.warning("Could not construct assembly from STEP file(s).")
 
-        # --- Load example ---
-        assy_example = st.selectbox("Load example",
-                                     ["(none)", "pin-in-hole", "stacked-plates", "bracket"],
-                                     key="assy_ex")
-        if assy_example != "(none)" and st.button("Load example", key="assy_load_ex"):
-            from tolerance_stack.assembly_examples import (
-                create_pin_in_hole_assembly, create_stacked_plates_assembly,
-                create_bracket_assembly,
+        elif import_method == "JSON file upload":
+            assy_uploaded = st.file_uploader("Upload JSON", type=["json"], key="assy_upload")
+            if assy_uploaded is not None:
+                try:
+                    data = json.loads(assy_uploaded.read())
+                    if "bodies" in data:
+                        st.session_state["assy_data"] = data
+                        st.success(f"Loaded assembly: {data.get('name', 'unknown')}")
+                        st.rerun()
+                except Exception as e:
+                    st.error(f"Failed to load: {e}")
+
+        elif import_method == "Load example":
+            assy_example = st.selectbox(
+                "Example", ["(none)", "pin-in-hole", "stacked-plates", "bracket"],
+                key="assy_ex",
             )
-            builders = {"pin-in-hole": create_pin_in_hole_assembly,
-                        "stacked-plates": create_stacked_plates_assembly,
-                        "bracket": create_bracket_assembly}
-            assy_obj = builders[assy_example]()
-            # Serialize to session state via save/load
-            with tempfile.NamedTemporaryFile(suffix=".json", delete=False, mode="w") as f:
-                assy_obj.save(f.name)
-                with open(f.name) as rf:
-                    st.session_state["assy_data"] = json.load(rf)
-            st.rerun()
+            if assy_example != "(none)" and st.button("Load example", key="assy_load_ex"):
+                from tolerance_stack.assembly_examples import (
+                    create_pin_in_hole_assembly, create_stacked_plates_assembly,
+                    create_bracket_assembly,
+                )
+                builders = {
+                    "pin-in-hole": create_pin_in_hole_assembly,
+                    "stacked-plates": create_stacked_plates_assembly,
+                    "bracket": create_bracket_assembly,
+                }
+                assy_obj = builders[assy_example]()
+                with tempfile.NamedTemporaryFile(suffix=".json", delete=False, mode="w") as f:
+                    assy_obj.save(f.name)
+                    with open(f.name) as rf:
+                        st.session_state["assy_data"] = json.load(rf)
+                st.rerun()
+
+        else:  # Build manually
+            with st.expander("Add a body", expanded=True):
+                mb_name = st.text_input("Body name", key="mb_name")
+                mb_ox = st.number_input("Origin X", value=0.0, format="%.3f", key="mb_ox")
+                mb_oy = st.number_input("Origin Y", value=0.0, format="%.3f", key="mb_oy")
+                mb_oz = st.number_input("Origin Z", value=0.0, format="%.3f", key="mb_oz")
+                if st.button("Add body", key="mb_add"):
+                    if "assy_data" not in st.session_state or st.session_state["assy_data"] is None:
+                        st.session_state["assy_data"] = {
+                            "name": assy_name, "bodies": [], "mates": [], "measurement": None,
+                        }
+                    st.session_state["assy_data"]["bodies"].append({
+                        "name": mb_name, "features": [],
+                        "placement_origin": [mb_ox, mb_oy, mb_oz],
+                        "placement_rotation": [0, 0, 0],
+                    })
+                    st.rerun()
 
         if "assy_data" not in st.session_state:
             st.session_state["assy_data"] = None
 
         assy_data = st.session_state["assy_data"]
 
-        if assy_data:
-            st.markdown("**Bodies:**")
-            for bd in assy_data.get("bodies", []):
-                with st.expander(f"Body: {bd['name']}"):
+        # ==============================================================
+        # 2. Browse & Edit Features
+        # ==============================================================
+        if assy_data and assy_data.get("bodies"):
+            st.markdown("---")
+            st.subheader("2. Features & Tolerances")
+            st.markdown("Expand a body to edit feature tolerances or add new features.")
+
+            FEATURE_TYPES = ["point", "plane", "axis", "cylinder", "circle"]
+            DISTRIBUTION_NAMES = ALL_DISTRIBUTIONS
+
+            for bi, bd in enumerate(assy_data.get("bodies", [])):
+                with st.expander(f"Body: **{bd['name']}** ({len(bd.get('features', []))} features)"):
                     origin = bd.get("placement_origin", [0, 0, 0])
                     rot = bd.get("placement_rotation", [0, 0, 0])
-                    st.text(f"  Placement: origin={origin}, rotation={rot}")
-                    for feat in bd.get("features", []):
-                        tol_parts = []
-                        if feat.get("position_tol", 0) > 0:
-                            tol_parts.append(f"pos_tol={feat['position_tol']}")
-                        if feat.get("orientation_tol", 0) > 0:
-                            tol_parts.append(f"orient_tol={feat['orientation_tol']}")
-                        tol_str = f"  [{', '.join(tol_parts)}]" if tol_parts else ""
-                        st.text(f"  {feat['feature_type']:10s} {feat['name']}: origin={feat.get('origin', [0,0,0])}, dir={feat.get('direction', [0,0,1])}{tol_str}")
+                    st.caption(f"Placement: origin={origin}, rotation={rot}")
 
-                        # Show GD&T if present
+                    # --- Existing features with editable tolerances ---
+                    for fi, feat in enumerate(bd.get("features", [])):
+                        fkey = f"b{bi}_f{fi}"
+                        st.markdown(f"**{feat['name']}** (`{feat['feature_type']}`)")
+                        fc1, fc2, fc3, fc4 = st.columns(4)
+                        with fc1:
+                            new_pos_tol = st.number_input(
+                                "Position tol", value=float(feat.get("position_tol", 0)),
+                                min_value=0.0, format="%.4f", key=f"{fkey}_ptol",
+                            )
+                        with fc2:
+                            new_orient_tol = st.number_input(
+                                "Orient. tol", value=float(feat.get("orientation_tol", 0)),
+                                min_value=0.0, format="%.4f", key=f"{fkey}_otol",
+                            )
+                        with fc3:
+                            new_form_tol = st.number_input(
+                                "Form tol", value=float(feat.get("form_tol", 0)),
+                                min_value=0.0, format="%.4f", key=f"{fkey}_ftol",
+                            )
+                        with fc4:
+                            new_sigma = st.number_input(
+                                "Sigma", value=float(feat.get("sigma", 3.0)),
+                                min_value=0.1, format="%.1f", key=f"{fkey}_sig",
+                            )
+
+                        # Size tolerances (for cylinders/circles)
+                        if feat.get("feature_type") in ("cylinder", "circle"):
+                            sc1, sc2, sc3 = st.columns(3)
+                            with sc1:
+                                new_size_nom = st.number_input(
+                                    "Size nominal", value=float(feat.get("size_nominal", 0)),
+                                    format="%.4f", key=f"{fkey}_snom",
+                                )
+                            with sc2:
+                                new_size_plus = st.number_input(
+                                    "Size +tol", value=float(feat.get("size_plus_tol", 0)),
+                                    min_value=0.0, format="%.4f", key=f"{fkey}_splus",
+                                )
+                            with sc3:
+                                new_size_minus = st.number_input(
+                                    "Size -tol", value=float(feat.get("size_minus_tol", 0)),
+                                    min_value=0.0, format="%.4f", key=f"{fkey}_sminus",
+                                )
+
+                        if st.button("Apply", key=f"{fkey}_apply"):
+                            feat["position_tol"] = new_pos_tol
+                            feat["orientation_tol"] = new_orient_tol
+                            feat["form_tol"] = new_form_tol
+                            feat["sigma"] = new_sigma
+                            if feat.get("feature_type") in ("cylinder", "circle"):
+                                feat["size_nominal"] = new_size_nom
+                                feat["size_plus_tol"] = new_size_plus
+                                feat["size_minus_tol"] = new_size_minus
+                            st.success(f"Updated {feat['name']}")
+
+                        # --- GD&T on this feature ---
                         fcfs = feat.get("feature_control_frames", [])
                         if fcfs:
-                            for fcf in fcfs:
-                                datum_str = f"  datums: {fcf.get('datum_refs', [])}" if fcf.get('datum_refs') else ""
-                                mc_str = f"  [{fcf.get('material_condition', 'NONE')}]" if fcf.get('material_condition', 'NONE') != 'NONE' else ""
-                                st.text(f"    GD&T: {fcf.get('gdt_type', '?')} = {fcf.get('tolerance_value', 0):.4f}{mc_str}{datum_str}")
+                            for gi, fcf in enumerate(fcfs):
+                                datum_str = f"  datums={fcf.get('datum_refs', [])}" if fcf.get("datum_refs") else ""
+                                mc_str = f"  [{fcf.get('material_condition', 'NONE')}]" if fcf.get("material_condition", "NONE") != "NONE" else ""
+                                st.caption(f"GD&T: {fcf.get('gdt_type', '?')} = {fcf.get('tolerance_value', 0):.4f}{mc_str}{datum_str}")
 
+                        st.markdown("---")
+
+                    # --- Add new feature to this body ---
+                    with st.expander(f"Add feature to {bd['name']}"):
+                        nf_name = st.text_input("Feature name", key=f"b{bi}_nf_name")
+                        nf_type = st.selectbox("Feature type", FEATURE_TYPES, key=f"b{bi}_nf_type")
+                        nfc1, nfc2 = st.columns(2)
+                        with nfc1:
+                            nf_origin = st.text_input("Origin (x,y,z)", "0,0,0", key=f"b{bi}_nf_origin")
+                            nf_dir = st.text_input("Direction (x,y,z)", "0,0,1", key=f"b{bi}_nf_dir")
+                        with nfc2:
+                            nf_radius = st.number_input("Radius", value=0.0, min_value=0.0, format="%.4f", key=f"b{bi}_nf_radius")
+                            nf_pos_tol = st.number_input("Position tol", value=0.0, min_value=0.0, format="%.4f", key=f"b{bi}_nf_ptol")
+                        if st.button("Add feature", key=f"b{bi}_nf_add"):
+                            try:
+                                origin_vals = [float(x) for x in nf_origin.split(",")]
+                                dir_vals = [float(x) for x in nf_dir.split(",")]
+                            except ValueError:
+                                origin_vals = [0, 0, 0]
+                                dir_vals = [0, 0, 1]
+                            new_feat = {
+                                "name": nf_name,
+                                "feature_type": nf_type,
+                                "origin": origin_vals,
+                                "direction": dir_vals,
+                                "radius": nf_radius,
+                                "position_tol": nf_pos_tol,
+                                "orientation_tol": 0.0,
+                                "form_tol": 0.0,
+                                "sigma": 3.0,
+                                "distribution": "normal",
+                                "feature_control_frames": [],
+                                "size_nominal": 0.0,
+                                "size_plus_tol": 0.0,
+                                "size_minus_tol": 0.0,
+                            }
+                            bd.setdefault("features", []).append(new_feat)
+                            st.rerun()
+
+            # ==============================================================
+            # 3. Add GD&T to Features
+            # ==============================================================
+            st.markdown("---")
+            st.subheader("3. Add GD&T")
+
+            GDT_TYPES = [
+                "FLATNESS", "STRAIGHTNESS", "CIRCULARITY", "CYLINDRICITY",
+                "PERPENDICULARITY", "ANGULARITY", "PARALLELISM",
+                "POSITION", "CONCENTRICITY", "SYMMETRY",
+                "PROFILE_SURFACE", "PROFILE_LINE",
+                "CIRCULAR_RUNOUT", "TOTAL_RUNOUT",
+            ]
+            MAT_CONDITIONS = ["NONE", "MMC", "LMC"]
+
+            bf_options, bf_lookup = _body_feature_options(assy_data)
+
+            if bf_options:
+                with st.expander("Add GD&T callout to a feature"):
+                    gdt_target = st.selectbox("Target feature", bf_options, key="gdt_target")
+                    gdt_type = st.selectbox("GD&T type", GDT_TYPES, key="gdt_type")
+                    gc1, gc2 = st.columns(2)
+                    with gc1:
+                        gdt_value = st.number_input("Tolerance value", value=0.05, min_value=0.0, format="%.4f", key="gdt_value")
+                        gdt_mc = st.selectbox("Material condition", MAT_CONDITIONS, key="gdt_mc")
+                    with gc2:
+                        gdt_datums = st.text_input("Datum refs (comma-separated, e.g. A,B)", "", key="gdt_datums")
+
+                    if st.button("Add GD&T", key="gdt_add"):
+                        body_name, feat_name = bf_lookup[gdt_target]
+                        datum_list = [d.strip() for d in gdt_datums.split(",") if d.strip()] if gdt_datums else []
+                        new_fcf = {
+                            "name": f"gdt_{feat_name}_{gdt_type.lower()}",
+                            "gdt_type": gdt_type,
+                            "tolerance_value": gdt_value,
+                            "material_condition": gdt_mc,
+                            "datum_refs": datum_list,
+                        }
+                        for bd in assy_data["bodies"]:
+                            if bd["name"] == body_name:
+                                for feat in bd["features"]:
+                                    if feat["name"] == feat_name:
+                                        feat.setdefault("feature_control_frames", []).append(new_fcf)
+                        st.success(f"Added {gdt_type} to {gdt_target}")
+                        st.rerun()
+
+            # ==============================================================
+            # 4. Define Mates
+            # ==============================================================
+            st.markdown("---")
+            st.subheader("4. Mates")
+
+            MATE_TYPES = ["coincident", "coaxial", "coplanar", "at_distance", "parallel", "concentric"]
+
+            # Show existing mates
             if assy_data.get("mates"):
-                st.markdown("**Mates:**")
-                for m in assy_data["mates"]:
-                    tol_str = f"  dist_tol={m['distance_tol']}" if m.get("distance_tol", 0) > 0 else ""
-                    st.text(f"  {m['name']}: {m['body_a']}.{m['feature_a']} <-> {m['body_b']}.{m['feature_b']} ({m['mate_type']}){tol_str}")
+                for mi, m in enumerate(assy_data["mates"]):
+                    mc1, mc2 = st.columns([5, 1])
+                    with mc1:
+                        tol_str = f"  dist_tol={m['distance_tol']}" if m.get("distance_tol", 0) > 0 else ""
+                        st.text(f"{m['name']}: {m['body_a']}.{m['feature_a']} <-> {m['body_b']}.{m['feature_b']} ({m['mate_type']}){tol_str}")
+                    with mc2:
+                        if st.button("X", key=f"mate_del_{mi}"):
+                            assy_data["mates"].pop(mi)
+                            st.rerun()
+
+            if bf_options and len(bf_options) >= 2:
+                with st.expander("Add a mate"):
+                    mate_name = st.text_input("Mate name", key="mate_name")
+                    mm1, mm2 = st.columns(2)
+                    with mm1:
+                        mate_a = st.selectbox("Feature A", bf_options, key="mate_feat_a")
+                    with mm2:
+                        mate_b = st.selectbox("Feature B", bf_options, index=min(1, len(bf_options) - 1), key="mate_feat_b")
+                    mate_type = st.selectbox("Mate type", MATE_TYPES, key="mate_type")
+
+                    md1, md2 = st.columns(2)
+                    with md1:
+                        mate_dist = st.number_input("Distance (for at_distance)", value=0.0, format="%.4f", key="mate_dist")
+                    with md2:
+                        mate_dist_tol = st.number_input("Distance tolerance", value=0.0, min_value=0.0, format="%.4f", key="mate_dist_tol")
+
+                    if st.button("Add mate", key="mate_add"):
+                        body_a, feat_a = bf_lookup[mate_a]
+                        body_b, feat_b = bf_lookup[mate_b]
+                        new_mate = {
+                            "name": mate_name or f"mate_{len(assy_data.get('mates', []))}",
+                            "body_a": body_a, "feature_a": feat_a,
+                            "body_b": body_b, "feature_b": feat_b,
+                            "mate_type": mate_type,
+                            "distance": mate_dist,
+                            "distance_tol": mate_dist_tol,
+                            "distribution": "normal",
+                            "sigma": 3.0,
+                        }
+                        assy_data.setdefault("mates", []).append(new_mate)
+                        st.success(f"Added mate: {body_a}.{feat_a} <-> {body_b}.{feat_b}")
+                        st.rerun()
+
+            # ==============================================================
+            # 5. Define Measurement
+            # ==============================================================
+            st.markdown("---")
+            st.subheader("5. Measurement")
+
+            MEAS_TYPES = [
+                "distance", "distance_along", "angle",
+                "point_to_plane", "point_to_line",
+                "plane_to_plane_angle", "line_to_plane_angle",
+                "gap", "flush", "interference",
+            ]
 
             if assy_data.get("measurement"):
                 m = assy_data["measurement"]
-                st.markdown("**Measurement:**")
-                st.text(f"  {m['name']}: {m['body_a']}.{m['feature_a']} -> {m['body_b']}.{m['feature_b']} ({m['measurement_type']})")
+                st.info(f"Current: **{m['name']}** -- {m['body_a']}.{m['feature_a']} -> {m['body_b']}.{m['feature_b']} ({m['measurement_type']})")
+                if st.button("Remove measurement", key="meas_remove"):
+                    assy_data["measurement"] = None
+                    st.rerun()
 
-            # Export
+            if bf_options and len(bf_options) >= 2:
+                with st.expander("Set measurement" if not assy_data.get("measurement") else "Change measurement"):
+                    meas_name = st.text_input("Measurement name", "gap", key="meas_name")
+                    ms1, ms2 = st.columns(2)
+                    with ms1:
+                        meas_a = st.selectbox("From feature", bf_options, key="meas_feat_a")
+                    with ms2:
+                        meas_b = st.selectbox("To feature", bf_options, index=min(1, len(bf_options) - 1), key="meas_feat_b")
+                    meas_type = st.selectbox("Measurement type", MEAS_TYPES, key="meas_type")
+                    meas_dir = st.text_input("Direction (x,y,z) for distance_along", "1,0,0", key="meas_dir")
+
+                    if st.button("Set measurement", key="meas_set"):
+                        body_a, feat_a = bf_lookup[meas_a]
+                        body_b, feat_b = bf_lookup[meas_b]
+                        try:
+                            dir_vals = [float(x) for x in meas_dir.split(",")]
+                        except ValueError:
+                            dir_vals = [1, 0, 0]
+                        assy_data["measurement"] = {
+                            "name": meas_name,
+                            "body_a": body_a, "feature_a": feat_a,
+                            "body_b": body_b, "feature_b": feat_b,
+                            "measurement_type": meas_type,
+                            "direction": dir_vals,
+                        }
+                        st.success(f"Measurement set: {body_a}.{feat_a} -> {body_b}.{feat_b} ({meas_type})")
+                        st.rerun()
+
+            # --- Export ---
+            st.markdown("---")
             st.download_button(
                 "Download assembly JSON",
                 data=json.dumps(assy_data, indent=2),
                 file_name=f"{assy_name.replace(' ', '_').lower()}.json",
                 mime="application/json", key="assy_export",
             )
-        else:
-            st.info("Load an example, upload a JSON file, or import a STEP file to get started.")
 
+            if st.button("Clear assembly", key="assy_clear"):
+                st.session_state["assy_data"] = None
+                st.rerun()
+
+        elif not assy_data:
+            st.info("Upload a STEP file, load a JSON, or load an example to get started.")
+
+    # ==================================================================
+    # Right column: Analysis results
+    # ==================================================================
     with col_results3:
         st.subheader("Analysis")
 
@@ -664,10 +973,10 @@ with tab_assembly:
 
         can_run_assy = assy_data is not None and assy_data.get("measurement") is not None
         if assy_data and not can_run_assy:
-            st.info("Assembly needs a measurement defined to run analysis.")
+            st.info("Define a measurement (step 5) to enable analysis.")
 
         # 3D Visualization (before analysis, so user can always see the model)
-        if assy_data is not None:
+        if assy_data is not None and assy_data.get("bodies"):
             try:
                 from tolerance_stack.visualization import visualize_assembly, PLOTLY_AVAILABLE
                 if PLOTLY_AVAILABLE:
@@ -704,7 +1013,8 @@ with tab_assembly:
             with st.expander("DOF Status", expanded=False):
                 from tolerance_stack.assembly_process import compute_dof_status
                 dof = compute_dof_status(assy_obj)
-                st.text(dof.summary())
+                for body_name, status in dof.items():
+                    st.text(f"{body_name}: {status.summary()}")
 
             # MC histogram
             mc_result = results.get("mc")

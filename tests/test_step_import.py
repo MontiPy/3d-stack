@@ -5,7 +5,7 @@ import os
 import pytest
 
 from tolerance_stack.step_import import (
-    import_step, import_step_pmi,
+    import_step, import_step_multi, import_step_pmi,
     _parse_step_file, _parse_params, _parse_value,
     StepImportResult,
 )
@@ -122,6 +122,70 @@ class TestImportStep:
         s = result.summary()
         assert "STEP Import" in s
         assert "entities" in s.lower()
+
+
+SAMPLE_STEP_2 = """ISO-10303-21;
+HEADER;
+FILE_DESCRIPTION(('STEP AP214'),'2;1');
+FILE_NAME('shaft.step','2024-01-01',('Author'),(''),'',' ','');
+FILE_SCHEMA(('AUTOMOTIVE_DESIGN'));
+ENDSEC;
+DATA;
+#1 = PRODUCT('Shaft','Shaft part','',());
+#2 = CARTESIAN_POINT('origin',(0.0,0.0,0.0));
+#3 = DIRECTION('z_dir',(0.0,0.0,1.0));
+#4 = AXIS2_PLACEMENT_3D('',#2,#3,$);
+#5 = CYLINDRICAL_SURFACE('shaft_od',#4,4.975);
+#6 = PERPENDICULARITY_TOLERANCE('perp_tol',0.01);
+ENDSEC;
+END-ISO-10303-21;
+"""
+
+
+@pytest.fixture
+def step_file_2(tmp_path):
+    path = str(tmp_path / "shaft.step")
+    with open(path, "w") as f:
+        f.write(SAMPLE_STEP_2)
+    return path
+
+
+class TestImportStepMulti:
+    def test_two_files(self, step_file, step_file_2):
+        result = import_step_multi([step_file, step_file_2], assembly_name="Combined")
+        assert isinstance(result, StepImportResult)
+        assert result.assembly is not None
+        assert result.assembly.name == "Combined"
+        # Should have bodies from both files
+        body_names = list(result.assembly.bodies.keys())
+        assert len(body_names) >= 2
+
+    def test_features_merged(self, step_file, step_file_2):
+        result = import_step_multi([step_file, step_file_2])
+        # Features from both files should appear
+        assert len(result.features) >= 2
+
+    def test_gdt_merged(self, step_file, step_file_2):
+        result = import_step_multi([step_file, step_file_2])
+        # GD&T from both files: position + flatness from file 1, perp from file 2
+        assert len(result.gdt_callouts) >= 3
+
+    def test_single_file_fallback(self, step_file):
+        result = import_step_multi([step_file], assembly_name="Single")
+        assert result.assembly is not None
+        assert len(result.assembly.bodies) >= 1
+
+    def test_summary(self, step_file, step_file_2):
+        result = import_step_multi([step_file, step_file_2])
+        s = result.summary()
+        assert "STEP Import" in s
+
+    def test_duplicate_body_names(self, step_file):
+        """Two identical files should not lose bodies due to name collision."""
+        result = import_step_multi([step_file, step_file], assembly_name="Dupes")
+        assert result.assembly is not None
+        # Should have renamed the duplicate bodies rather than dropping them
+        assert len(result.assembly.bodies) >= 2
 
 
 class TestImportStepPMI:

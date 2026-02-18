@@ -53,7 +53,7 @@ from tolerance_stack.reporting import (
     generate_apqp_report, generate_pdf_report, save_report,
     save_pdf_report,
 )
-from tolerance_stack.step_import import import_step, import_step_pmi
+from tolerance_stack.step_import import import_step, import_step_multi, import_step_pmi
 from tolerance_stack.visualization import (
     visualize_assembly, visualize_linkage, visualize_sensitivity,
     add_mc_cloud, VisualizationConfig, PLOTLY_AVAILABLE,
@@ -91,7 +91,7 @@ __all__ = [
     "generate_apqp_report", "generate_pdf_report",
     "save_report", "save_pdf_report",
     # STEP Import
-    "import_step", "import_step_pmi",
+    "import_step", "import_step_multi", "import_step_pmi",
     # Visualization
     "visualize_assembly", "visualize_linkage", "visualize_sensitivity",
     "add_mc_cloud", "VisualizationConfig", "PLOTLY_AVAILABLE",

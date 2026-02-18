@@ -566,15 +566,29 @@ with tab_assembly:
         )
 
         if import_method == "STEP file upload":
-            step_uploaded = st.file_uploader(
-                "Upload STEP file (.stp / .step)", type=["stp", "step"], key="step_upload",
+            step_files = st.file_uploader(
+                "Upload STEP files (.stp / .step) -- select one or more",
+                type=["stp", "step"], key="step_upload",
+                accept_multiple_files=True,
             )
-            if step_uploaded is not None and st.button("Import STEP", key="step_import_btn"):
-                from tolerance_stack.step_import import import_step
-                with tempfile.NamedTemporaryFile(suffix=".stp", delete=False, mode="wb") as tf:
-                    tf.write(step_uploaded.read())
-                    tf.flush()
-                    step_result = import_step(tf.name, assembly_name=assy_name)
+            if step_files and st.button("Import STEP", key="step_import_btn"):
+                from tolerance_stack.step_import import import_step, import_step_multi
+                # Write uploaded files to temp paths
+                temp_paths = []
+                for sf in step_files:
+                    with tempfile.NamedTemporaryFile(
+                        suffix=".stp", delete=False, mode="wb",
+                        prefix=sf.name.rsplit(".", 1)[0] + "_",
+                    ) as tf:
+                        tf.write(sf.read())
+                        tf.flush()
+                        temp_paths.append(tf.name)
+
+                if len(temp_paths) == 1:
+                    step_result = import_step(temp_paths[0], assembly_name=assy_name)
+                else:
+                    step_result = import_step_multi(temp_paths, assembly_name=assy_name)
+
                 st.text(step_result.summary())
                 if step_result.warnings:
                     for w in step_result.warnings:
@@ -584,14 +598,16 @@ with tab_assembly:
                         step_result.assembly.save(jf.name)
                         with open(jf.name) as rf:
                             st.session_state["assy_data"] = json.load(rf)
+                    n_bodies = len(step_result.assembly.bodies)
+                    n_files = len(temp_paths)
                     st.success(
-                        f"Imported {len(step_result.assembly.bodies)} bodies, "
+                        f"Imported {n_bodies} bodies from {n_files} file(s), "
                         f"{len(step_result.features)} features, "
                         f"{len(step_result.gdt_callouts)} GD&T callouts"
                     )
                     st.rerun()
                 else:
-                    st.warning("Could not construct assembly from STEP file.")
+                    st.warning("Could not construct assembly from STEP file(s).")
 
         elif import_method == "JSON file upload":
             assy_uploaded = st.file_uploader("Upload JSON", type=["json"], key="assy_upload")

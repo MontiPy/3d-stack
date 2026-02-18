@@ -13,6 +13,7 @@ functional toolkit for tolerance analysis at three levels of complexity:
 | Reporting (HTML/PDF/APQP) | Professional tolerance analysis reports | Production-ready |
 | STEP Import | CAD file geometry and PMI extraction | Requires `pythonocc-core` |
 | 3D Visualization | Interactive Plotly plots | Requires `plotly` |
+| Streamlit GUI | Browser-based interactive UI | Requires `streamlit` |
 
 ### Required dependencies
 
@@ -745,6 +746,85 @@ loaded_linkage = Linkage.load("my_linkage.json")
 assy.save("my_assembly.json")
 loaded_assy = Assembly.load("my_assembly.json")
 ```
+
+---
+
+## Streamlit GUI: STEP-to-Stack Workflow
+
+The application includes a browser-based GUI for the complete STEP-to-analysis
+workflow. Launch it with:
+
+```bash
+pip install streamlit plotly   # one-time setup
+streamlit run tolerance_stack/gui.py
+```
+
+### GUI Workflow: Upload STEP, Define Features, Analyze
+
+The **Assembly** tab provides a guided 5-step workflow:
+
+**Step 1 -- Import Geometry**
+
+Choose from four import sources:
+- **STEP file upload** -- drag-and-drop a `.stp` or `.step` file. The parser
+  extracts bodies, geometric features (planes, cylinders), and any embedded
+  GD&T/PMI callouts automatically.
+- **JSON file upload** -- load a previously saved assembly definition.
+- **Load example** -- start from a built-in example (pin-in-hole, stacked
+  plates, bracket).
+- **Build manually** -- create bodies from scratch.
+
+**Step 2 -- Edit Feature Tolerances**
+
+After import, expand each body to see its features. For every feature you can
+edit:
+- Position tolerance, orientation tolerance, form tolerance
+- Sigma level (default 3.0)
+- Size nominal, size +/- tolerance (for cylinders and circles)
+
+Click **Apply** to save changes to each feature.
+You can also **add new features** to any body.
+
+**Step 3 -- Add GD&T**
+
+Select any `Body.Feature` from a dropdown and attach a Feature Control Frame:
+- Choose from all 14 GD&T types (Position, Flatness, Perpendicularity, etc.)
+- Set tolerance value, material condition (RFS/MMC/LMC), and datum references
+
+**Step 4 -- Define Mates**
+
+Connect features between bodies:
+- Select Feature A and Feature B from dropdowns
+- Choose mate type (coincident, coaxial, coplanar, at_distance, parallel,
+  concentric)
+- Optionally set distance and distance tolerance
+
+**Step 5 -- Set Measurement**
+
+Define what the analysis should compute:
+- Select "from" and "to" features
+- Choose measurement type (distance, gap, flush, interference, angle, etc.)
+- Set direction vector for directional measurements
+
+**Run Analysis**
+
+With a measurement defined, click **Run Analysis** to execute Worst-Case, RSS,
+and Monte Carlo. The right panel shows:
+- Numerical results (nominal, min, max, tolerance range)
+- Monte Carlo histogram with sigma lines
+- Process capability (Cp/Cpk) if spec limits are set
+- Sensitivity tornado chart
+- 3D visualization (if Plotly is installed)
+- DOF status for each body
+
+### Other GUI Tabs
+
+| Tab | Description |
+|-----|-------------|
+| **Tolerance Stack** | 1D linear stack builder and analysis |
+| **Linkage** | 3D kinematic chain builder with joint/link editor |
+| **DOE / Optimizer** | HLM, Full Factorial, LHS, RSM, Sobol', GA, Contingency |
+| **Reports** | Generate HTML, APQP, PDF, or text reports |
 
 ---
 

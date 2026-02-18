@@ -457,7 +457,19 @@ with tab_linkage:
             for key, result in results.items():
                 st.text(result.summary())
 
-            # 3D linkage plot
+            # 3D Interactive Plotly visualization
+            try:
+                from tolerance_stack.visualization import visualize_linkage as viz_lk, PLOTLY_AVAILABLE as _PL
+                mc_result_3d = results.get("mc")
+                mc_s = mc_result_3d.mc_samples if mc_result_3d and mc_result_3d.mc_samples is not None else None
+                if _PL:
+                    fig_pl = viz_lk(linkage, mc_samples=mc_s)
+                    if fig_pl is not None:
+                        st.plotly_chart(fig_pl, use_container_width=True)
+            except Exception:
+                pass
+
+            # 3D linkage plot (matplotlib fallback)
             positions = linkage.all_joint_positions()
             end_pos = linkage.end_effector_position()
             xs = [p[0] for _, p in positions]
@@ -654,6 +666,22 @@ with tab_assembly:
         if assy_data and not can_run_assy:
             st.info("Assembly needs a measurement defined to run analysis.")
 
+        # 3D Visualization (before analysis, so user can always see the model)
+        if assy_data is not None:
+            try:
+                from tolerance_stack.visualization import visualize_assembly, PLOTLY_AVAILABLE
+                if PLOTLY_AVAILABLE:
+                    with tempfile.NamedTemporaryFile(suffix=".json", delete=False, mode="w") as f:
+                        json.dump(assy_data, f)
+                        f.flush()
+                        from tolerance_stack.assembly import Assembly as _Assy
+                        _viz_assy = _Assy.load(f.name)
+                    fig_3d = visualize_assembly(_viz_assy)
+                    if fig_3d is not None:
+                        st.plotly_chart(fig_3d, use_container_width=True)
+            except Exception:
+                pass  # Graceful fallback if visualization fails
+
         if st.button("Run Analysis", key="assy_run", type="primary", disabled=not can_run_assy):
             from tolerance_stack.assembly import Assembly
             from tolerance_stack.assembly_analysis import analyze_assembly
@@ -745,8 +773,11 @@ with tab_assembly:
 with tab_tools:
     st.header("Design of Experiments & Tolerance Optimization")
 
-    tool_mode = st.radio("Tool", ["HLM Sensitivity", "Full Factorial DOE", "Tolerance Optimizer"],
-                         horizontal=True, key="tool_mode")
+    tool_mode = st.radio("Tool", [
+        "HLM Sensitivity", "Full Factorial DOE",
+        "Latin Hypercube DOE", "Response Surface (RSM)",
+        "Sobol' Sensitivity", "Tolerance Optimizer",
+    ], horizontal=True, key="tool_mode")
 
     # --- HLM Sensitivity ---
     if tool_mode == "HLM Sensitivity":
@@ -935,6 +966,221 @@ with tab_tools:
                 st.pyplot(fig_int)
                 plt.close(fig_int)
 
+    # --- Latin Hypercube DOE ---
+    elif tool_mode == "Latin Hypercube DOE":
+        st.subheader("Latin Hypercube Sampling DOE")
+        st.markdown("Space-filling sampling with better coverage than random, far fewer runs than full factorial.")
+
+        if "lhs_factors" not in st.session_state:
+            st.session_state["lhs_factors"] = []
+
+        with st.expander("Add a factor", expanded=len(st.session_state["lhs_factors"]) == 0):
+            lf_name = st.text_input("Factor name", key="lhs_f_name")
+            lf_low = st.number_input("Low level", value=-1.0, format="%.4f", key="lhs_f_low")
+            lf_high = st.number_input("High level", value=1.0, format="%.4f", key="lhs_f_high")
+            lf_nom = st.number_input("Nominal", value=0.0, format="%.4f", key="lhs_f_nom")
+
+            if st.button("Add factor", key="lhs_add_f"):
+                st.session_state["lhs_factors"].append({
+                    "name": lf_name, "low": lf_low, "high": lf_high, "nominal": lf_nom,
+                })
+                st.rerun()
+
+        factors_lhs = st.session_state["lhs_factors"]
+        if factors_lhs:
+            for i, f in enumerate(factors_lhs):
+                fc, fd = st.columns([5, 1])
+                with fc:
+                    st.text(f"  {f['name']}: [{f['low']}, {f['high']}], nom={f['nominal']}")
+                with fd:
+                    if st.button("X", key=f"lhs_del_{i}"):
+                        st.session_state["lhs_factors"].pop(i)
+                        st.rerun()
+
+        lhs_n = st.number_input("Number of samples", value=100, min_value=10, key="lhs_n")
+        lhs_weights_str = st.text_input(
+            "Weights (comma-separated)",
+            value=",".join(["1.0"] * max(1, len(factors_lhs))),
+            key="lhs_weights",
+        )
+
+        if st.button("Run LHS DOE", key="lhs_run", type="primary", disabled=len(factors_lhs) < 1):
+            from tolerance_stack.optimizer import latin_hypercube_doe, DOEFactor
+
+            try:
+                weights = [float(w.strip()) for w in lhs_weights_str.split(",")]
+            except ValueError:
+                weights = [1.0] * len(factors_lhs)
+
+            lhs_factor_objs = [DOEFactor(name=f["name"], levels=[f["low"], f["high"]],
+                                          nominal=f["nominal"]) for f in factors_lhs]
+
+            def evaluate_lhs(inputs):
+                return sum(inputs[f["name"]] * (weights[i] if i < len(weights) else 1.0)
+                           for i, f in enumerate(factors_lhs))
+
+            result = latin_hypercube_doe(evaluate_lhs, lhs_factor_objs, n_samples=int(lhs_n))
+            st.text(result.summary())
+
+            if result.main_effects:
+                me_sorted = sorted(result.main_effects.items(), key=lambda x: abs(x[1]), reverse=True)
+                names_me = [m[0] for m in me_sorted]
+                vals_me = [m[1] for m in me_sorted]
+                fig_me, ax_me = plt.subplots(figsize=(8, max(3, len(names_me) * 0.5)))
+                ax_me.barh(range(len(names_me)), vals_me, color="#00BCD4",
+                           edgecolor="black", linewidth=0.5)
+                ax_me.set_yticks(range(len(names_me)))
+                ax_me.set_yticklabels(names_me)
+                ax_me.set_xlabel("Correlation-based Main Effect")
+                ax_me.set_title("LHS Main Effects")
+                ax_me.invert_yaxis()
+                fig_me.tight_layout()
+                st.pyplot(fig_me)
+                plt.close(fig_me)
+
+    # --- Response Surface Methodology ---
+    elif tool_mode == "Response Surface (RSM)":
+        st.subheader("Response Surface Methodology")
+        st.markdown("Fits a second-order polynomial model. Identifies main effects, quadratic effects, and interactions.")
+
+        if "rsm_factors" not in st.session_state:
+            st.session_state["rsm_factors"] = []
+
+        with st.expander("Add a factor", expanded=len(st.session_state["rsm_factors"]) == 0):
+            rf_name = st.text_input("Factor name", key="rsm_f_name")
+            rf_low = st.number_input("Low level", value=-1.0, format="%.4f", key="rsm_f_low")
+            rf_high = st.number_input("High level", value=1.0, format="%.4f", key="rsm_f_high")
+            rf_nom = st.number_input("Nominal", value=0.0, format="%.4f", key="rsm_f_nom")
+
+            if st.button("Add factor", key="rsm_add_f"):
+                st.session_state["rsm_factors"].append({
+                    "name": rf_name, "low": rf_low, "high": rf_high, "nominal": rf_nom,
+                })
+                st.rerun()
+
+        factors_rsm = st.session_state["rsm_factors"]
+        if factors_rsm:
+            for i, f in enumerate(factors_rsm):
+                fc, fd = st.columns([5, 1])
+                with fc:
+                    st.text(f"  {f['name']}: [{f['low']}, {f['high']}], nom={f['nominal']}")
+                with fd:
+                    if st.button("X", key=f"rsm_del_{i}"):
+                        st.session_state["rsm_factors"].pop(i)
+                        st.rerun()
+
+        rsm_weights_str = st.text_input(
+            "Weights (comma-separated)",
+            value=",".join(["1.0"] * max(1, len(factors_rsm))),
+            key="rsm_weights",
+        )
+        rsm_quad = st.checkbox("Include x*y interaction", value=True, key="rsm_interact_term")
+
+        if st.button("Run RSM Analysis", key="rsm_run", type="primary", disabled=len(factors_rsm) < 2):
+            from tolerance_stack.optimizer import response_surface_doe, DOEFactor
+
+            try:
+                weights = [float(w.strip()) for w in rsm_weights_str.split(",")]
+            except ValueError:
+                weights = [1.0] * len(factors_rsm)
+
+            rsm_factor_objs = [DOEFactor(name=f["name"], levels=[f["low"], f["high"]],
+                                          nominal=f["nominal"]) for f in factors_rsm]
+
+            def evaluate_rsm(inputs):
+                total = sum(inputs[f["name"]] * (weights[i] if i < len(weights) else 1.0)
+                            for i, f in enumerate(factors_rsm))
+                if rsm_quad and len(factors_rsm) >= 2:
+                    total += inputs[factors_rsm[0]["name"]] * inputs[factors_rsm[1]["name"]]
+                return total
+
+            result = response_surface_doe(evaluate_rsm, rsm_factor_objs)
+            st.text(result.summary())
+
+            # R-squared metric
+            st.metric("R-squared", f"{result.r_squared:.4f}")
+
+    # --- Sobol' Sensitivity ---
+    elif tool_mode == "Sobol' Sensitivity":
+        st.subheader("Sobol' Global Sensitivity Analysis")
+        st.markdown("Computes first-order (S_i) and total-effect (S_Ti) Sobol' indices for variance decomposition.")
+
+        if "sobol_factors" not in st.session_state:
+            st.session_state["sobol_factors"] = []
+
+        with st.expander("Add a factor", expanded=len(st.session_state["sobol_factors"]) == 0):
+            sf_name = st.text_input("Factor name", key="sobol_f_name")
+            sf_low = st.number_input("Low level", value=-1.0, format="%.4f", key="sobol_f_low")
+            sf_high = st.number_input("High level", value=1.0, format="%.4f", key="sobol_f_high")
+            sf_nom = st.number_input("Nominal", value=0.0, format="%.4f", key="sobol_f_nom")
+
+            if st.button("Add factor", key="sobol_add_f"):
+                st.session_state["sobol_factors"].append({
+                    "name": sf_name, "low": sf_low, "high": sf_high, "nominal": sf_nom,
+                })
+                st.rerun()
+
+        factors_sobol = st.session_state["sobol_factors"]
+        if factors_sobol:
+            for i, f in enumerate(factors_sobol):
+                fc, fd = st.columns([5, 1])
+                with fc:
+                    st.text(f"  {f['name']}: [{f['low']}, {f['high']}]")
+                with fd:
+                    if st.button("X", key=f"sobol_del_{i}"):
+                        st.session_state["sobol_factors"].pop(i)
+                        st.rerun()
+
+        sobol_n = st.number_input("Base samples", value=1024, min_value=128, step=256, key="sobol_n")
+        sobol_weights_str = st.text_input(
+            "Weights (comma-separated)",
+            value=",".join(["1.0"] * max(1, len(factors_sobol))),
+            key="sobol_weights",
+        )
+        sobol_interact = st.checkbox("Add x1*x2 interaction", value=False, key="sobol_interact_term")
+
+        if st.button("Run Sobol' Analysis", key="sobol_run", type="primary", disabled=len(factors_sobol) < 2):
+            from tolerance_stack.optimizer import sobol_sensitivity, DOEFactor
+
+            try:
+                weights = [float(w.strip()) for w in sobol_weights_str.split(",")]
+            except ValueError:
+                weights = [1.0] * len(factors_sobol)
+
+            sobol_factor_objs = [DOEFactor(name=f["name"], levels=[f["low"], f["high"]],
+                                            nominal=f["nominal"]) for f in factors_sobol]
+
+            def evaluate_sobol(inputs):
+                total = sum(inputs[f["name"]] * (weights[i] if i < len(weights) else 1.0)
+                            for i, f in enumerate(factors_sobol))
+                if sobol_interact and len(factors_sobol) >= 2:
+                    total += inputs[factors_sobol[0]["name"]] * inputs[factors_sobol[1]["name"]]
+                return total
+
+            result = sobol_sensitivity(evaluate_sobol, sobol_factor_objs, n_samples=int(sobol_n))
+            st.text(result.summary())
+
+            # Sobol' indices chart
+            names_s = sorted(result.factor_names,
+                              key=lambda n: result.total_order.get(n, 0), reverse=True)
+            si_vals = [result.first_order.get(n, 0) for n in names_s]
+            sti_vals = [result.total_order.get(n, 0) for n in names_s]
+
+            fig_sob, ax_sob = plt.subplots(figsize=(8, max(3, len(names_s) * 0.5)))
+            y = np.arange(len(names_s))
+            ax_sob.barh(y - 0.15, si_vals, height=0.3, color="#2196F3", label="First-order S_i")
+            ax_sob.barh(y + 0.15, sti_vals, height=0.3, color="#F44336", label="Total-effect S_Ti")
+            ax_sob.set_yticks(y)
+            ax_sob.set_yticklabels(names_s)
+            ax_sob.set_xlabel("Sensitivity Index")
+            ax_sob.set_title("Sobol' Indices")
+            ax_sob.legend()
+            ax_sob.invert_yaxis()
+            ax_sob.set_xlim(0, 1.1)
+            fig_sob.tight_layout()
+            st.pyplot(fig_sob)
+            plt.close(fig_sob)
+
     # --- Tolerance Optimizer ---
     elif tool_mode == "Tolerance Optimizer":
         st.subheader("Tolerance Optimization")
@@ -1017,7 +1263,7 @@ with tab_reports:
         rpt_author = st.text_input("Author", "", key="rpt_author")
     with rc2:
         rpt_revision = st.text_input("Revision", "A", key="rpt_revision")
-        rpt_format = st.selectbox("Report format", ["HTML", "APQP (HTML)", "Plain Text"], key="rpt_format")
+        rpt_format = st.selectbox("Report format", ["HTML", "APQP (HTML)", "PDF", "Plain Text"], key="rpt_format")
         rpt_include_plots = st.checkbox("Include plots", value=True, key="rpt_plots")
 
     st.markdown("---")
@@ -1163,6 +1409,14 @@ with tab_reports:
             with st.expander("Preview"):
                 st.components.v1.html(html, height=600, scrolling=True)
 
+        elif rpt_format == "PDF":
+            from tolerance_stack.reporting import generate_pdf_report
+            pdf_bytes = generate_pdf_report(config, results_dict, assembly_info=assembly_info,
+                                             capability_results=capability_results)
+            st.download_button("Download PDF Report", data=pdf_bytes,
+                               file_name="tolerance_report.pdf", mime="application/pdf", key="rpt_dl_pdf")
+            st.success("PDF report generated!")
+
         elif rpt_format == "Plain Text":
             text = generate_text_report(config, results_dict, capability_results=capability_results)
             st.download_button("Download Text Report", data=text,
@@ -1192,12 +1446,15 @@ with st.sidebar:
     st.markdown("**Features**")
     st.markdown("""
     - 9 statistical distributions (Normal, Uniform, Triangular, Weibull, Lognormal, Rayleigh, Bimodal)
-    - Process capability metrics (Cp/Cpk/Pp/Ppk/PPM)
-    - Full GD&T per ASME Y14.5 (position, profile, runout, MMC/LMC)
-    - Datum reference frames and DOF tracking
+    - Process capability (Cp/Cpk/Pp/Ppk/PPM)
+    - Full GD&T per ASME Y14.5 with composite FCF support
+    - Datum reference frames, DOF tracking, datum shift
+    - Interactive 3D visualization (Plotly)
     - STEP file import with PMI extraction
-    - Tolerance optimization and DOE (HLM, Full Factorial)
-    - APQP-compliant report generation
+    - DOE: HLM, Full Factorial, Latin Hypercube, Response Surface (RSM)
+    - Sobol' global sensitivity analysis
+    - Tolerance optimization with cost model
+    - APQP-compliant reporting (HTML, PDF, Text)
     - Gap, flush, and interference measurements
     """)
     st.markdown("---")

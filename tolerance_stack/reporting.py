@@ -319,10 +319,204 @@ def generate_apqp_report(
     return "\n".join(html)
 
 
+def generate_pdf_report(
+    config: ReportConfig,
+    analysis_results: dict,
+    assembly_info: Optional[dict] = None,
+    capability_results=None,
+    plot_images: Optional[dict[str, bytes]] = None,
+) -> bytes:
+    """Generate a PDF tolerance analysis report.
+
+    Uses a lightweight pure-Python approach: builds the PDF manually
+    with basic text layout. For more sophisticated PDF output, the HTML
+    report can be printed to PDF from a browser.
+
+    Args:
+        config: Report configuration.
+        analysis_results: Analysis results by method.
+        assembly_info: Optional assembly description.
+        capability_results: Optional process capability data.
+        plot_images: Optional dict of name -> PNG bytes.
+
+    Returns:
+        PDF file content as bytes.
+    """
+    date_str = config.date or datetime.now().strftime("%Y-%m-%d %H:%M")
+
+    # Build page content as structured text blocks
+    pages = []
+
+    # Title page
+    title_lines = [
+        "",
+        config.title,
+        "",
+        f"Project:  {config.project}",
+        f"Author:   {config.author}",
+        f"Revision: {config.revision}",
+        f"Date:     {date_str}",
+    ]
+    pages.append(("title", title_lines, None))
+
+    # Assembly info
+    if assembly_info:
+        info_lines = ["Assembly Description", ""]
+        if "name" in assembly_info:
+            info_lines.append(f"Assembly: {assembly_info['name']}")
+        if isinstance(assembly_info.get("bodies"), int):
+            info_lines.append(f"Bodies: {assembly_info['bodies']}")
+        if isinstance(assembly_info.get("mates"), int):
+            info_lines.append(f"Mates: {assembly_info['mates']}")
+        pages.append(("text", info_lines, None))
+
+    # Analysis results
+    for method_key, result in analysis_results.items():
+        if hasattr(result, 'summary'):
+            result_lines = [f"{method_key.upper()} Analysis Results", ""]
+            result_lines.extend(result.summary().split("\n"))
+            pages.append(("text", result_lines, None))
+        elif isinstance(result, dict):
+            result_lines = [f"{method_key.upper()} Analysis Results", ""]
+            for k, v in result.items():
+                result_lines.append(f"  {k}: {v}")
+            pages.append(("text", result_lines, None))
+
+    # Capability
+    if capability_results and hasattr(capability_results, 'summary'):
+        cap_lines = ["Process Capability", ""]
+        cap_lines.extend(capability_results.summary().split("\n"))
+        pages.append(("text", cap_lines, None))
+
+    # Plot images
+    if plot_images:
+        for name, img_bytes in plot_images.items():
+            pages.append(("image", [name], img_bytes))
+
+    # Build PDF
+    return _build_pdf(pages, config)
+
+
+def _build_pdf(pages: list, config: ReportConfig) -> bytes:
+    """Build a simple PDF from structured page content."""
+    page_contents = []
+    for page_type, lines, img_data in pages:
+        if page_type in ("title", "text"):
+            stream_lines = ["BT", "/F1 10 Tf"]
+            y = 750
+            for line in lines:
+                if page_type == "title" and lines.index(line) == 1:
+                    stream_lines.append("/F1 18 Tf")
+                    stream_lines.append(f"1 0 0 1 72 {y} Tm")
+                    stream_lines.append(f"({_pdf_escape(line)}) Tj")
+                    stream_lines.append("/F1 10 Tf")
+                    y -= 30
+                else:
+                    stream_lines.append(f"1 0 0 1 72 {y} Tm")
+                    stream_lines.append(f"({_pdf_escape(line)}) Tj")
+                    y -= 14
+                    if y < 50:
+                        break
+            stream_lines.append("ET")
+            page_contents.append(("\n".join(stream_lines), None))
+
+        elif page_type == "image" and img_data:
+            stream_lines = ["BT", "/F1 12 Tf",
+                            "1 0 0 1 72 750 Tm",
+                            f"({_pdf_escape(lines[0] if lines else 'Plot')}) Tj",
+                            "ET"]
+            page_contents.append(("\n".join(stream_lines), img_data))
+
+    return _simple_pdf(page_contents, config)
+
+
+def _simple_pdf(page_contents: list, config: ReportConfig) -> bytes:
+    """Generate a minimal valid PDF file."""
+    buf = io.BytesIO()
+    offsets = []
+
+    def write(data: str):
+        buf.write(data.encode('latin-1'))
+
+    def obj_offset():
+        offsets.append(buf.tell())
+
+    # Header
+    write("%PDF-1.4\n%\xe2\xe3\xcf\xd3\n")
+
+    n_pages = len(page_contents)
+
+    # Object 1: Catalog
+    obj_offset()
+    write("1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n")
+
+    # Object 2: Pages
+    obj_offset()
+    page_refs = " ".join(f"{3 + i * 2} 0 R" for i in range(n_pages))
+    write(f"2 0 obj\n<< /Type /Pages /Kids [{page_refs}] /Count {n_pages} >>\nendobj\n")
+
+    # Font object
+    font_obj = 3 + n_pages * 2
+    obj_offset()
+    write(f"{font_obj} 0 obj\n<< /Type /Font /Subtype /Type1 "
+          f"/BaseFont /Courier >>\nendobj\n")
+
+    # Create pages and content streams
+    for pi, (content, img_data) in enumerate(page_contents):
+        page_obj = 3 + pi * 2
+        stream_obj = 4 + pi * 2
+
+        # Content stream
+        obj_offset()
+        content_bytes = content.encode('latin-1', errors='replace')
+        write(f"{stream_obj} 0 obj\n<< /Length {len(content_bytes)} >>\n"
+              f"stream\n")
+        buf.write(content_bytes)
+        write(f"\nendstream\nendobj\n")
+
+        # Page object
+        obj_offset()
+        write(f"{page_obj} 0 obj\n"
+              f"<< /Type /Page /Parent 2 0 R "
+              f"/MediaBox [0 0 612 792] "
+              f"/Contents {stream_obj} 0 R "
+              f"/Resources << /Font << /F1 {font_obj} 0 R >> >> "
+              f">>\nendobj\n")
+
+    # Cross-reference table
+    xref_pos = buf.tell()
+    n_objs = len(offsets) + 1
+    write(f"xref\n0 {n_objs}\n")
+    write("0000000000 65535 f \n")
+    for off in offsets:
+        write(f"{off:010d} 00000 n \n")
+
+    # Trailer
+    write(f"trailer\n<< /Size {n_objs} /Root 1 0 R >>\n")
+    write(f"startxref\n{xref_pos}\n%%EOF\n")
+
+    return buf.getvalue()
+
+
+def _pdf_escape(text: str) -> str:
+    """Escape special characters for PDF text strings."""
+    return (text
+            .replace("\\", "\\\\")
+            .replace("(", "\\(")
+            .replace(")", "\\)")
+            .replace("\n", "\\n"))
+
+
 def save_report(html: str, path: str) -> None:
     """Save HTML report to a file."""
     with open(path, "w", encoding="utf-8") as f:
         f.write(html)
+
+
+def save_pdf_report(pdf_bytes: bytes, path: str) -> None:
+    """Save PDF report to a file."""
+    with open(path, "wb") as f:
+        f.write(pdf_bytes)
 
 
 # ---------------------------------------------------------------------------

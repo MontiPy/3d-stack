@@ -401,3 +401,473 @@ def optimize_tolerances(
         iterations=iteration + 1 if not converged else iteration,
         converged=converged,
     )
+
+
+# ---------------------------------------------------------------------------
+# Latin Hypercube Sampling DOE
+# ---------------------------------------------------------------------------
+
+def latin_hypercube_doe(
+    evaluate_fn: Callable[[dict[str, float]], float],
+    factors: list[DOEFactor],
+    n_samples: int = 100,
+    seed: int = 42,
+) -> DOEResult:
+    """Latin Hypercube Sampling DOE.
+
+    Provides space-filling sampling with better coverage than random sampling
+    and far fewer runs than full factorial for large factor counts.
+
+    Each factor's range is divided into n_samples equal intervals, and exactly
+    one sample is placed in each interval (stratified sampling).
+
+    Args:
+        evaluate_fn: Function mapping {factor_name: value} -> scalar response.
+        factors: List of DOEFactor objects (each with at least 2 levels
+                 defining [low, high] range).
+        n_samples: Number of LHS samples to generate.
+        seed: Random seed for reproducibility.
+
+    Returns:
+        DOEResult with runs, responses, and estimated main effects.
+    """
+    rng = np.random.default_rng(seed)
+    n_factors = len(factors)
+
+    # Generate LHS design matrix
+    lhs_matrix = np.zeros((n_samples, n_factors))
+    for fi in range(n_factors):
+        perm = rng.permutation(n_samples)
+        for si in range(n_samples):
+            lhs_matrix[si, fi] = (perm[si] + rng.random()) / n_samples
+
+    # Scale to factor ranges
+    runs = []
+    responses = np.zeros(n_samples)
+
+    for si in range(n_samples):
+        inputs = {}
+        for fi, factor in enumerate(factors):
+            low = min(factor.levels)
+            high = max(factor.levels)
+            val = low + lhs_matrix[si, fi] * (high - low)
+            inputs[factor.name] = val
+        runs.append(inputs)
+        responses[si] = evaluate_fn(inputs)
+
+    # Estimate main effects via correlation
+    main_effects = {}
+    for fi, factor in enumerate(factors):
+        factor_values = lhs_matrix[:, fi]
+        correlation = np.corrcoef(factor_values, responses)[0, 1]
+        low = min(factor.levels)
+        high = max(factor.levels)
+        main_effects[factor.name] = float(correlation * (high - low))
+
+    return DOEResult(
+        factor_names=[f.name for f in factors],
+        runs=runs,
+        responses=responses,
+        main_effects=main_effects,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Response Surface Methodology (RSM)
+# ---------------------------------------------------------------------------
+
+@dataclass
+class RSMResult:
+    """Result from Response Surface Methodology analysis.
+
+    Attributes:
+        coefficients: Dict of term_name -> coefficient.
+        r_squared: R-squared goodness of fit.
+        adj_r_squared: Adjusted R-squared.
+        predicted_optimum: Dict of factor_name -> optimal value.
+        optimum_response: Predicted response at optimum.
+        main_effects: Linear coefficients.
+        quadratic_effects: Quadratic coefficients.
+        interaction_effects: Cross-term coefficients.
+        residuals: Array of residuals.
+    """
+    coefficients: dict[str, float] = field(default_factory=dict)
+    r_squared: float = 0.0
+    adj_r_squared: float = 0.0
+    predicted_optimum: dict[str, float] = field(default_factory=dict)
+    optimum_response: float = 0.0
+    main_effects: dict[str, float] = field(default_factory=dict)
+    quadratic_effects: dict[str, float] = field(default_factory=dict)
+    interaction_effects: dict[tuple[str, str], float] = field(default_factory=dict)
+    residuals: np.ndarray = field(default_factory=lambda: np.array([]))
+
+    def summary(self) -> str:
+        lines = [
+            "=== Response Surface Methodology ===",
+            f"  R-squared:      {self.r_squared:.6f}",
+            f"  Adj R-squared:  {self.adj_r_squared:.6f}",
+            "",
+            "  Linear (main) effects:",
+        ]
+        for name, coeff in sorted(self.main_effects.items(),
+                                   key=lambda x: abs(x[1]), reverse=True):
+            lines.append(f"    {name:40s}  {coeff:+.6f}")
+
+        if self.quadratic_effects:
+            lines.append("")
+            lines.append("  Quadratic effects:")
+            for name, coeff in sorted(self.quadratic_effects.items(),
+                                       key=lambda x: abs(x[1]), reverse=True):
+                lines.append(f"    {name}^2  {' ' * max(0, 37 - len(name))}  {coeff:+.6f}")
+
+        if self.interaction_effects:
+            lines.append("")
+            lines.append("  Interactions:")
+            sorted_int = sorted(self.interaction_effects.items(),
+                                key=lambda x: abs(x[1]), reverse=True)
+            for (a, b), coeff in sorted_int[:10]:
+                lines.append(f"    {a} x {b}  {' ' * max(0, 30 - len(a) - len(b))}  {coeff:+.6f}")
+
+        if self.predicted_optimum:
+            lines.append("")
+            lines.append(f"  Predicted optimum (response={self.optimum_response:.6f}):")
+            for name, val in self.predicted_optimum.items():
+                lines.append(f"    {name:40s}  {val:.6f}")
+
+        return "\n".join(lines)
+
+
+def response_surface_doe(
+    evaluate_fn: Callable[[dict[str, float]], float],
+    factors: list[DOEFactor],
+    n_samples: int = 0,
+    seed: int = 42,
+    include_quadratic: bool = True,
+) -> RSMResult:
+    """Response Surface Methodology with quadratic model fitting.
+
+    Generates a design matrix (Central Composite or LHS), evaluates the
+    response function, and fits a second-order polynomial model:
+        y = b0 + sum(bi*xi) + sum(bii*xi^2) + sum(bij*xi*xj)
+
+    Args:
+        evaluate_fn: Function mapping {factor_name: value} -> scalar response.
+        factors: List of DOEFactor objects.
+        n_samples: Number of samples (0 = auto-select based on factor count).
+        seed: Random seed.
+        include_quadratic: Include x^2 terms in model.
+
+    Returns:
+        RSMResult with coefficients, R-squared, and predicted optimum.
+    """
+    n_factors = len(factors)
+
+    if n_samples <= 0:
+        # Auto: use ~10 samples per coefficient for good fit
+        n_terms = 1 + n_factors  # intercept + linear
+        if include_quadratic:
+            n_terms += n_factors + n_factors * (n_factors - 1) // 2
+        n_samples = max(n_terms * 3, 2 ** n_factors + 2 * n_factors + 1)
+        n_samples = min(n_samples, 1000)  # Cap for performance
+
+    # Generate LHS design
+    rng = np.random.default_rng(seed)
+    lhs = np.zeros((n_samples, n_factors))
+    for fi in range(n_factors):
+        perm = rng.permutation(n_samples)
+        for si in range(n_samples):
+            lhs[si, fi] = (perm[si] + rng.random()) / n_samples
+
+    # Scale to [-1, 1] coded space
+    coded = lhs * 2 - 1
+
+    # Add center point
+    coded = np.vstack([coded, np.zeros(n_factors)])
+    n_total = len(coded)
+
+    # Evaluate
+    runs = []
+    responses = np.zeros(n_total)
+    for si in range(n_total):
+        inputs = {}
+        for fi, factor in enumerate(factors):
+            low = min(factor.levels)
+            high = max(factor.levels)
+            mid = (low + high) / 2
+            span = (high - low) / 2
+            inputs[factor.name] = mid + coded[si, fi] * span
+        runs.append(inputs)
+        responses[si] = evaluate_fn(inputs)
+
+    # Build design matrix for regression
+    # Columns: [1, x1, x2, ..., x1^2, x2^2, ..., x1*x2, ...]
+    columns = [np.ones(n_total)]  # intercept
+    col_names = ["intercept"]
+
+    # Linear terms
+    for fi, factor in enumerate(factors):
+        columns.append(coded[:, fi])
+        col_names.append(factor.name)
+
+    # Quadratic terms
+    if include_quadratic:
+        for fi, factor in enumerate(factors):
+            columns.append(coded[:, fi] ** 2)
+            col_names.append(f"{factor.name}^2")
+
+        # Interaction terms
+        for fi in range(n_factors):
+            for fj in range(fi + 1, n_factors):
+                columns.append(coded[:, fi] * coded[:, fj])
+                col_names.append(f"{factors[fi].name}*{factors[fj].name}")
+
+    X = np.column_stack(columns)
+
+    # Least-squares fit
+    try:
+        coeffs, residuals_arr, rank, sv = np.linalg.lstsq(X, responses, rcond=None)
+    except np.linalg.LinAlgError:
+        coeffs = np.zeros(len(col_names))
+        residuals_arr = np.array([])
+
+    # Predictions and R-squared
+    y_pred = X @ coeffs
+    ss_res = np.sum((responses - y_pred) ** 2)
+    ss_tot = np.sum((responses - np.mean(responses)) ** 2)
+    r_sq = 1 - ss_res / max(ss_tot, 1e-30)
+
+    n_coeffs = len(coeffs)
+    if n_total > n_coeffs:
+        adj_r_sq = 1 - (1 - r_sq) * (n_total - 1) / (n_total - n_coeffs - 1)
+    else:
+        adj_r_sq = r_sq
+
+    residuals = responses - y_pred
+
+    # Extract effects
+    coeff_dict = dict(zip(col_names, coeffs))
+    main_eff = {}
+    quad_eff = {}
+    inter_eff = {}
+
+    for fi, factor in enumerate(factors):
+        main_eff[factor.name] = float(coeffs[1 + fi])
+
+    if include_quadratic:
+        offset = 1 + n_factors
+        for fi, factor in enumerate(factors):
+            quad_eff[factor.name] = float(coeffs[offset + fi])
+
+        offset += n_factors
+        idx = 0
+        for fi in range(n_factors):
+            for fj in range(fi + 1, n_factors):
+                inter_eff[(factors[fi].name, factors[fj].name)] = float(coeffs[offset + idx])
+                idx += 1
+
+    # Find optimum (by evaluating on a grid in coded space)
+    best_response = None
+    best_inputs = None
+    grid_n = 11
+    grid_1d = np.linspace(-1, 1, grid_n)
+
+    if n_factors <= 4:
+        # Grid search feasible for small factor count
+        from itertools import product as cart_product
+        for combo in cart_product(*([grid_1d] * n_factors)):
+            coded_pt = np.array(combo)
+            row = [1.0] + list(coded_pt)
+            if include_quadratic:
+                row += list(coded_pt ** 2)
+                for fi in range(n_factors):
+                    for fj in range(fi + 1, n_factors):
+                        row.append(coded_pt[fi] * coded_pt[fj])
+            pred = np.dot(row, coeffs)
+            if best_response is None or pred < best_response:
+                best_response = pred
+                best_inputs = coded_pt.copy()
+    else:
+        # For many factors, just use center + search along main effects
+        best_coded = np.zeros(n_factors)
+        best_response = float(coeffs[0])
+        for fi in range(n_factors):
+            for val in grid_1d:
+                test = best_coded.copy()
+                test[fi] = val
+                row = [1.0] + list(test)
+                if include_quadratic:
+                    row += list(test ** 2)
+                    for ffi in range(n_factors):
+                        for ffj in range(ffi + 1, n_factors):
+                            row.append(test[ffi] * test[ffj])
+                pred = np.dot(row, coeffs)
+                if pred < best_response:
+                    best_response = pred
+                    best_coded = test.copy()
+        best_inputs = best_coded
+
+    # Convert optimum from coded to natural units
+    predicted_opt = {}
+    if best_inputs is not None:
+        for fi, factor in enumerate(factors):
+            low = min(factor.levels)
+            high = max(factor.levels)
+            mid = (low + high) / 2
+            span = (high - low) / 2
+            predicted_opt[factor.name] = float(mid + best_inputs[fi] * span)
+
+    return RSMResult(
+        coefficients=coeff_dict,
+        r_squared=float(r_sq),
+        adj_r_squared=float(adj_r_sq),
+        predicted_optimum=predicted_opt,
+        optimum_response=float(best_response) if best_response is not None else 0.0,
+        main_effects=main_eff,
+        quadratic_effects=quad_eff,
+        interaction_effects=inter_eff,
+        residuals=residuals,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Sobol' Global Sensitivity Analysis
+# ---------------------------------------------------------------------------
+
+@dataclass
+class SobolResult:
+    """Result from Sobol' sensitivity analysis.
+
+    Attributes:
+        factor_names: Names of factors.
+        first_order: First-order sensitivity indices (S_i).
+        total_order: Total-effect sensitivity indices (S_Ti).
+        n_samples: Number of base samples used.
+        total_variance: Total output variance.
+    """
+    factor_names: list[str] = field(default_factory=list)
+    first_order: dict[str, float] = field(default_factory=dict)
+    total_order: dict[str, float] = field(default_factory=dict)
+    n_samples: int = 0
+    total_variance: float = 0.0
+
+    def summary(self) -> str:
+        lines = [
+            "=== Sobol' Global Sensitivity Analysis ===",
+            f"  Total variance:  {self.total_variance:.6f}",
+            f"  Base samples:    {self.n_samples}",
+            "",
+            f"  {'Factor':<40s}  {'S_i':>8s}  {'S_Ti':>8s}",
+            f"  {'-'*40}  {'-'*8}  {'-'*8}",
+        ]
+        # Sort by total-order index
+        sorted_names = sorted(self.factor_names,
+                              key=lambda n: self.total_order.get(n, 0),
+                              reverse=True)
+        for name in sorted_names:
+            si = self.first_order.get(name, 0)
+            sti = self.total_order.get(name, 0)
+            lines.append(f"  {name:<40s}  {si:8.4f}  {sti:8.4f}")
+
+        # Check sum
+        si_sum = sum(self.first_order.values())
+        lines.append(f"\n  Sum of S_i: {si_sum:.4f} (=1.0 if no interactions)")
+
+        return "\n".join(lines)
+
+
+def sobol_sensitivity(
+    evaluate_fn: Callable[[dict[str, float]], float],
+    factors: list[DOEFactor],
+    n_samples: int = 1024,
+    seed: int = 42,
+) -> SobolResult:
+    """Sobol' global sensitivity analysis using Saltelli's sampling scheme.
+
+    Computes first-order (S_i) and total-effect (S_Ti) Sobol' indices.
+    - S_i measures the fraction of output variance due to factor i alone.
+    - S_Ti measures the fraction due to factor i including all interactions.
+
+    Uses the Saltelli (2010) estimator with N*(2k+2) model evaluations
+    where N = n_samples and k = number of factors.
+
+    Args:
+        evaluate_fn: Function mapping {factor_name: value} -> scalar response.
+        factors: List of DOEFactor objects (levels define [low, high] range).
+        n_samples: Number of base samples (recommend 512-4096).
+        seed: Random seed.
+
+    Returns:
+        SobolResult with first-order and total-order indices.
+    """
+    k = len(factors)
+    rng = np.random.default_rng(seed)
+
+    # Generate two independent quasi-random sample matrices A and B
+    # Each is N x k, values in [0, 1]
+    A = rng.random((n_samples, k))
+    B = rng.random((n_samples, k))
+
+    # Scale to factor ranges
+    lows = np.array([min(f.levels) for f in factors])
+    highs = np.array([max(f.levels) for f in factors])
+    spans = highs - lows
+    spans = np.where(spans < 1e-15, 1.0, spans)
+
+    def scale(matrix):
+        return lows + matrix * spans
+
+    def evaluate_matrix(matrix):
+        scaled = scale(matrix)
+        results = np.zeros(len(matrix))
+        for i in range(len(matrix)):
+            inputs = {factors[fi].name: scaled[i, fi] for fi in range(k)}
+            results[i] = evaluate_fn(inputs)
+        return results
+
+    # Evaluate A and B
+    f_A = evaluate_matrix(A)
+    f_B = evaluate_matrix(B)
+
+    # Total variance from combined A and B
+    f_all = np.concatenate([f_A, f_B])
+    total_variance = float(np.var(f_all))
+
+    if total_variance < 1e-30:
+        return SobolResult(
+            factor_names=[f.name for f in factors],
+            first_order={f.name: 0.0 for f in factors},
+            total_order={f.name: 0.0 for f in factors},
+            n_samples=n_samples,
+            total_variance=total_variance,
+        )
+
+    # For each factor i, build matrix AB_i (take column i from B, rest from A)
+    # and matrix BA_i (take column i from A, rest from B)
+    first_order = {}
+    total_order = {}
+
+    for fi in range(k):
+        # AB_i: A with column fi replaced by B's column fi
+        AB_i = A.copy()
+        AB_i[:, fi] = B[:, fi]
+        f_AB_i = evaluate_matrix(AB_i)
+
+        # First-order index: Jansen (1999) estimator
+        # S_i = 1 - Var(f_B - f_AB_i) / (2 * Var_total)
+        var_diff = np.mean((f_B - f_AB_i) ** 2) / 2.0
+        si = 1.0 - var_diff / total_variance
+        first_order[factors[fi].name] = float(np.clip(si, 0.0, 1.0))
+
+        # Total-effect index: Jansen estimator
+        # S_Ti = Var(f_A - f_AB_i) / (2 * Var_total)
+        var_diff_t = np.mean((f_A - f_AB_i) ** 2) / 2.0
+        sti = var_diff_t / total_variance
+        total_order[factors[fi].name] = float(np.clip(sti, 0.0, 1.0))
+
+    return SobolResult(
+        factor_names=[f.name for f in factors],
+        first_order=first_order,
+        total_order=total_order,
+        n_samples=n_samples,
+        total_variance=total_variance,
+    )

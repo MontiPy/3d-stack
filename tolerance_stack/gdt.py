@@ -310,6 +310,235 @@ class FeatureControlFrame:
         )
 
 
+# ---------------------------------------------------------------------------
+# Composite GD&T (upper + lower segment)
+# ---------------------------------------------------------------------------
+
+@dataclass
+class CompositeFCF:
+    """Composite Feature Control Frame (two-segment position/profile).
+
+    Per ASME Y14.5, a composite FCF has two rows:
+    - Upper segment (PLTZF): Controls pattern-level location and orientation
+      relative to the DRF.
+    - Lower segment (FRTZF): Controls feature-to-feature relationship within
+      the pattern (tighter tolerance, fewer datum constraints).
+
+    Attributes:
+        name: Identifier.
+        gdt_type: POSITION or PROFILE_SURFACE.
+        upper: The upper segment FCF (Pattern Locating Tolerance Zone Framework).
+        lower: The lower segment FCF (Feature Relating Tolerance Zone Framework).
+    """
+    name: str
+    gdt_type: GDTType
+    upper: FeatureControlFrame
+    lower: FeatureControlFrame
+
+    def __post_init__(self):
+        if self.gdt_type not in (GDTType.POSITION, GDTType.PROFILE_SURFACE,
+                                  GDTType.PROFILE_LINE):
+            raise ValueError(
+                f"Composite FCF only valid for POSITION or PROFILE, got {self.gdt_type}")
+        if self.lower.tolerance_value >= self.upper.tolerance_value:
+            raise ValueError(
+                "Lower segment tolerance must be smaller than upper segment")
+
+    @property
+    def pattern_tolerance(self) -> float:
+        """Upper segment tolerance (pattern location)."""
+        return self.upper.tolerance_value
+
+    @property
+    def feature_tolerance(self) -> float:
+        """Lower segment tolerance (feature-to-feature)."""
+        return self.lower.tolerance_value
+
+    def effective_upper(self, departure: float = 0.0) -> float:
+        """Upper segment effective tolerance including bonus."""
+        return self.upper.effective_tolerance(departure)
+
+    def effective_lower(self, departure: float = 0.0) -> float:
+        """Lower segment effective tolerance including bonus."""
+        return self.lower.effective_tolerance(departure)
+
+    def to_dict(self) -> dict:
+        return {
+            "name": self.name,
+            "gdt_type": self.gdt_type.value,
+            "upper": self.upper.to_dict(),
+            "lower": self.lower.to_dict(),
+        }
+
+    @classmethod
+    def from_dict(cls, d: dict) -> CompositeFCF:
+        return cls(
+            name=d["name"],
+            gdt_type=GDTType(d["gdt_type"]),
+            upper=FeatureControlFrame.from_dict(d["upper"]),
+            lower=FeatureControlFrame.from_dict(d["lower"]),
+        )
+
+
+# ---------------------------------------------------------------------------
+# Datum Feature Simulator
+# ---------------------------------------------------------------------------
+
+@dataclass
+class DatumShiftResult:
+    """Result of datum feature simulation.
+
+    Attributes:
+        datum_label: Datum letter.
+        shift_translation: Possible translation shift [dx, dy, dz].
+        shift_rotation: Possible rotation shift [drx, dry, drz] in degrees.
+        max_shift: Maximum shift magnitude.
+    """
+    datum_label: str
+    shift_translation: tuple[float, float, float] = (0.0, 0.0, 0.0)
+    shift_rotation: tuple[float, float, float] = (0.0, 0.0, 0.0)
+    max_shift: float = 0.0
+
+    def summary(self) -> str:
+        return (f"Datum {self.datum_label}: "
+                f"translation_shift={self.shift_translation}, "
+                f"rotation_shift={self.shift_rotation}, "
+                f"max_shift={self.max_shift:.6f}")
+
+
+def compute_datum_shift(
+    datum_feature: DatumFeature,
+    feature_size_nominal: float,
+    feature_size_tol_plus: float,
+    feature_size_tol_minus: float,
+    actual_size: Optional[float] = None,
+) -> DatumShiftResult:
+    """Compute datum shift for a datum feature with MMC/LMC modifier.
+
+    When a datum feature is applied at MMC or LMC, the datum feature
+    simulator is not at a fixed location -- it can shift within the
+    departure from the virtual condition.
+
+    Per ASME Y14.5-2009 / 2018:
+    - Datum feature at MMC: simulator can shift by (actual_size - MMC_size)
+    - Datum feature at LMC: simulator can shift by (LMC_size - actual_size)
+
+    For internal features (holes): MMC = smallest, LMC = largest
+    For external features (pins): MMC = largest, LMC = smallest
+
+    Args:
+        datum_feature: The datum feature definition.
+        feature_size_nominal: Nominal diameter/width.
+        feature_size_tol_plus: Plus tolerance on size.
+        feature_size_tol_minus: Minus tolerance on size.
+        actual_size: Actual manufactured size (if None, uses worst case).
+
+    Returns:
+        DatumShiftResult with possible shift.
+    """
+    if datum_feature.material_condition == MaterialCondition.NONE:
+        return DatumShiftResult(datum_label=datum_feature.label)
+
+    total_size_tol = feature_size_tol_plus + feature_size_tol_minus
+
+    if datum_feature.material_condition == MaterialCondition.MMC:
+        # For internal feature (hole): MMC = nominal - minus_tol (smallest)
+        # Max shift when actual is at LMC (largest)
+        if actual_size is not None:
+            mmc_size = feature_size_nominal - feature_size_tol_minus
+            shift_mag = abs(actual_size - mmc_size)
+        else:
+            # Worst case: maximum possible shift
+            shift_mag = total_size_tol
+    else:  # LMC
+        if actual_size is not None:
+            lmc_size = feature_size_nominal + feature_size_tol_plus
+            shift_mag = abs(lmc_size - actual_size)
+        else:
+            shift_mag = total_size_tol
+
+    # Shift is radial (diametral feature) so divide by 2 for positional
+    half_shift = shift_mag / 2.0
+
+    # Shift can occur in any direction perpendicular to the datum axis
+    return DatumShiftResult(
+        datum_label=datum_feature.label,
+        shift_translation=(half_shift, half_shift, 0.0),
+        max_shift=half_shift,
+    )
+
+
+def composite_fcf_to_tolerance_parameters(
+    composite: CompositeFCF,
+    body_name: str,
+    feature_name: str,
+    feature_direction: tuple[float, float, float] = (0, 0, 1),
+    sigma: float = 3.0,
+) -> list[dict]:
+    """Convert a CompositeFCF into tolerance parameters.
+
+    The composite creates two sets of parameters:
+    - Pattern-level: uses upper segment tolerance (location to DRF)
+    - Feature-level: uses lower segment tolerance (feature-to-feature)
+
+    Returns:
+        List of parameter dicts for assembly analysis.
+    """
+    from tolerance_stack.models import Distribution
+
+    params = []
+
+    # Upper segment (pattern location relative to DRF)
+    upper_half = composite.upper.half_tolerance
+    params.append({
+        "name": f"{body_name}.{feature_name}.{composite.name}.pattern_loc",
+        "source": "feature_position",
+        "body": body_name,
+        "feature": feature_name,
+        "component": "directed",
+        "nominal": 0.0,
+        "half_tol": upper_half,
+        "sigma": sigma,
+        "distribution": Distribution.NORMAL,
+        "gdt_type": composite.gdt_type.value,
+        "composite_segment": "upper",
+    })
+
+    # Lower segment (feature-to-feature within pattern)
+    lower_half = composite.lower.half_tolerance
+    if composite.upper.is_diametral:
+        for axis, label in enumerate(["x", "y"]):
+            params.append({
+                "name": f"{body_name}.{feature_name}.{composite.name}.feat_{label}",
+                "source": "feature_position",
+                "body": body_name,
+                "feature": feature_name,
+                "component": axis,
+                "nominal": 0.0,
+                "half_tol": lower_half,
+                "sigma": sigma,
+                "distribution": Distribution.NORMAL,
+                "gdt_type": composite.gdt_type.value,
+                "composite_segment": "lower",
+            })
+    else:
+        params.append({
+            "name": f"{body_name}.{feature_name}.{composite.name}.feat",
+            "source": "feature_position",
+            "body": body_name,
+            "feature": feature_name,
+            "component": "directed",
+            "nominal": 0.0,
+            "half_tol": lower_half,
+            "sigma": sigma,
+            "distribution": Distribution.NORMAL,
+            "gdt_type": composite.gdt_type.value,
+            "composite_segment": "lower",
+        })
+
+    return params
+
+
 def fcf_to_tolerance_parameters(
     fcf: FeatureControlFrame,
     body_name: str,

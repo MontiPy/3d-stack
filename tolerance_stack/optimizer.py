@@ -871,3 +871,407 @@ def sobol_sensitivity(
         n_samples=n_samples,
         total_variance=total_variance,
     )
+
+
+# ---------------------------------------------------------------------------
+# Genetic Algorithm Tolerance Optimizer
+# ---------------------------------------------------------------------------
+
+@dataclass
+class GAConfig:
+    """Configuration for the genetic algorithm optimizer.
+
+    Attributes:
+        population_size: Number of individuals per generation.
+        n_generations: Maximum number of generations.
+        crossover_rate: Probability of crossover between parents.
+        mutation_rate: Probability of mutating each gene.
+        mutation_scale: Scale of mutation as fraction of tolerance range.
+        elitism_count: Number of best individuals carried forward unchanged.
+        tournament_size: Tournament selection group size.
+    """
+    population_size: int = 80
+    n_generations: int = 200
+    crossover_rate: float = 0.85
+    mutation_rate: float = 0.15
+    mutation_scale: float = 0.2
+    elitism_count: int = 4
+    tournament_size: int = 3
+
+
+@dataclass
+class GAResult:
+    """Result from genetic algorithm tolerance optimization.
+
+    Attributes:
+        original_tolerances: Dict of param_name -> original half_tol.
+        optimized_tolerances: Dict of param_name -> optimized half_tol.
+        original_variation: Original assembly variation.
+        optimized_variation: Optimized assembly variation.
+        original_cost: Original manufacturing cost estimate.
+        optimized_cost: Optimized manufacturing cost estimate.
+        generations: Number of generations run.
+        converged: Whether the optimizer converged.
+        fitness_history: Best fitness per generation.
+    """
+    original_tolerances: dict[str, float] = field(default_factory=dict)
+    optimized_tolerances: dict[str, float] = field(default_factory=dict)
+    original_variation: float = 0.0
+    optimized_variation: float = 0.0
+    original_cost: float = 0.0
+    optimized_cost: float = 0.0
+    generations: int = 0
+    converged: bool = False
+    fitness_history: list[float] = field(default_factory=list)
+
+    def summary(self) -> str:
+        lines = [
+            "=== Genetic Algorithm Tolerance Optimization ===",
+            f"  Converged:          {self.converged}",
+            f"  Generations:        {self.generations}",
+            f"  Original variation: {self.original_variation:.6f}",
+            f"  Optimized variation:{self.optimized_variation:.6f}",
+            f"  Original cost:      {self.original_cost:.2f}",
+            f"  Optimized cost:     {self.optimized_cost:.2f}",
+            f"  Cost reduction:     {(1 - self.optimized_cost / max(self.original_cost, 1e-10)) * 100:.1f}%",
+            "",
+            "  Tolerance Changes:",
+        ]
+        for name in sorted(self.original_tolerances.keys()):
+            orig = self.original_tolerances[name]
+            opt = self.optimized_tolerances.get(name, orig)
+            change = (opt - orig) / max(orig, 1e-10) * 100
+            marker = " **" if abs(change) > 5 else ""
+            lines.append(
+                f"    {name:40s}  {orig:.6f} -> {opt:.6f}  ({change:+.1f}%){marker}"
+            )
+        return "\n".join(lines)
+
+
+def ga_optimize_tolerances(
+    sensitivity: list[tuple[str, float]],
+    tolerances: dict[str, float],
+    target_variation: float,
+    cost_fn: Optional[Callable[[str, float], float]] = None,
+    min_tol_fraction: float = 0.2,
+    max_tol_fraction: float = 3.0,
+    config: Optional[GAConfig] = None,
+    seed: int = 42,
+) -> GAResult:
+    """Optimize tolerance allocations using a genetic algorithm.
+
+    Uses tournament selection, single-point crossover, and Gaussian mutation
+    to evolve a population of tolerance allocations that minimize cost while
+    meeting the target assembly variation constraint.
+
+    The fitness function penalizes designs that violate the variation
+    constraint and rewards lower manufacturing cost.
+
+    Args:
+        sensitivity: List of (param_name, sensitivity_value).
+        tolerances: Dict of param_name -> current half_tolerance.
+        target_variation: Desired RSS variation (at 3-sigma).
+        cost_fn: Optional function(param_name, half_tol) -> cost.
+            Defaults to 1/tol^2 cost model.
+        min_tol_fraction: Minimum tolerance as fraction of original.
+        max_tol_fraction: Maximum tolerance as fraction of original.
+        config: GA configuration. Uses defaults if None.
+        seed: Random seed for reproducibility.
+
+    Returns:
+        GAResult with optimized tolerances and convergence history.
+    """
+    if config is None:
+        config = GAConfig()
+
+    if cost_fn is None:
+        def cost_fn(name: str, half_tol: float) -> float:
+            return 1.0 / max(half_tol, 1e-10) ** 2
+
+    rng = np.random.default_rng(seed)
+
+    param_names = [name for name, _ in sensitivity]
+    sens_values = {name: abs(s) for name, s in sensitivity}
+    n_params = len(param_names)
+
+    if n_params == 0:
+        return GAResult(converged=True)
+
+    # Bounds for each tolerance parameter
+    original_tols = {name: tolerances.get(name, 0.01) for name in param_names}
+    bounds_low = np.array([original_tols[n] * min_tol_fraction for n in param_names])
+    bounds_high = np.array([original_tols[n] * max_tol_fraction for n in param_names])
+
+    def compute_rss_var(tol_array):
+        total = 0.0
+        for i, name in enumerate(param_names):
+            s = sens_values.get(name, 0.0)
+            total += (s * tol_array[i]) ** 2
+        return np.sqrt(total)
+
+    def compute_cost(tol_array):
+        return sum(cost_fn(param_names[i], tol_array[i]) for i in range(n_params))
+
+    def fitness(tol_array):
+        var = compute_rss_var(tol_array)
+        cost = compute_cost(tol_array)
+        # Penalty for exceeding target variation
+        penalty = 0.0
+        if var > target_variation:
+            penalty = 1e6 * ((var - target_variation) / target_variation) ** 2
+        # Minimize cost + penalty (lower is better)
+        return -(cost + penalty)
+
+    # Original metrics
+    orig_array = np.array([original_tols[n] for n in param_names])
+    original_variation = compute_rss_var(orig_array)
+    original_cost = compute_cost(orig_array)
+
+    # Initialize population
+    pop_size = config.population_size
+    population = np.zeros((pop_size, n_params))
+    for i in range(pop_size):
+        population[i] = rng.uniform(bounds_low, bounds_high)
+    # Seed the population with the original tolerances
+    population[0] = orig_array.copy()
+
+    # Evaluate initial fitness
+    fit = np.array([fitness(population[i]) for i in range(pop_size)])
+
+    fitness_history = []
+    best_ever = population[np.argmax(fit)].copy()
+    best_ever_fit = np.max(fit)
+
+    converged = False
+
+    for gen in range(config.n_generations):
+        fitness_history.append(float(-best_ever_fit))  # Store cost (positive)
+
+        # Check convergence: variation met and cost stable
+        best_var = compute_rss_var(best_ever)
+        if best_var <= target_variation * 1.01 and gen > 10:
+            # Check if fitness has plateaued
+            if len(fitness_history) >= 20:
+                recent = fitness_history[-20:]
+                if max(recent) - min(recent) < abs(recent[-1]) * 0.001:
+                    converged = True
+                    break
+
+        # Selection + Crossover + Mutation
+        new_pop = np.zeros_like(population)
+
+        # Elitism: carry forward best individuals
+        elite_idx = np.argsort(fit)[-config.elitism_count:]
+        for ei, idx in enumerate(elite_idx):
+            new_pop[ei] = population[idx].copy()
+
+        # Fill rest with offspring
+        for i in range(config.elitism_count, pop_size):
+            # Tournament selection for parent 1
+            t1 = rng.choice(pop_size, size=config.tournament_size, replace=False)
+            p1_idx = t1[np.argmax(fit[t1])]
+
+            # Tournament selection for parent 2
+            t2 = rng.choice(pop_size, size=config.tournament_size, replace=False)
+            p2_idx = t2[np.argmax(fit[t2])]
+
+            parent1 = population[p1_idx]
+            parent2 = population[p2_idx]
+
+            # Crossover
+            if rng.random() < config.crossover_rate:
+                cx_point = rng.integers(1, n_params) if n_params > 1 else 1
+                child = np.concatenate([parent1[:cx_point], parent2[cx_point:]])
+            else:
+                child = parent1.copy()
+
+            # Mutation
+            for j in range(n_params):
+                if rng.random() < config.mutation_rate:
+                    scale = (bounds_high[j] - bounds_low[j]) * config.mutation_scale
+                    child[j] += rng.normal(0, scale)
+
+            # Clip to bounds
+            child = np.clip(child, bounds_low, bounds_high)
+            new_pop[i] = child
+
+        population = new_pop
+        fit = np.array([fitness(population[i]) for i in range(pop_size)])
+
+        # Track best
+        gen_best_idx = np.argmax(fit)
+        if fit[gen_best_idx] > best_ever_fit:
+            best_ever = population[gen_best_idx].copy()
+            best_ever_fit = fit[gen_best_idx]
+
+    # Build result
+    optimized_tols = {param_names[i]: float(best_ever[i]) for i in range(n_params)}
+
+    return GAResult(
+        original_tolerances=original_tols,
+        optimized_tolerances=optimized_tols,
+        original_variation=original_variation,
+        optimized_variation=compute_rss_var(best_ever),
+        original_cost=original_cost,
+        optimized_cost=compute_cost(best_ever),
+        generations=gen + 1 if not converged else gen,
+        converged=converged,
+        fitness_history=fitness_history,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Contingency Analysis (3DCS-style)
+# ---------------------------------------------------------------------------
+
+@dataclass
+class ContingencyItem:
+    """A single contingency analysis entry.
+
+    Attributes:
+        param_name: Name of the tolerance parameter.
+        baseline_variation: Assembly variation with all tolerances at nominal.
+        failure_variation: Assembly variation when this tolerance is at worst case.
+        impact: Increase in variation from baseline.
+        impact_percent: Impact as percentage of baseline.
+        rank: Ranking by impact (1 = highest).
+        failure_mode: Description of failure mode.
+    """
+    param_name: str
+    baseline_variation: float = 0.0
+    failure_variation: float = 0.0
+    impact: float = 0.0
+    impact_percent: float = 0.0
+    rank: int = 0
+    failure_mode: str = ""
+
+
+@dataclass
+class ContingencyResult:
+    """Result from contingency analysis.
+
+    Attributes:
+        items: List of ContingencyItem sorted by impact.
+        baseline_variation: Assembly variation at nominal.
+        worst_case_variation: Assembly variation with all tolerances at worst case.
+        method: Analysis method used.
+    """
+    items: list[ContingencyItem] = field(default_factory=list)
+    baseline_variation: float = 0.0
+    worst_case_variation: float = 0.0
+    method: str = "contingency"
+
+    def summary(self) -> str:
+        lines = [
+            "=== Contingency Analysis ===",
+            f"  Baseline variation: {self.baseline_variation:.6f}",
+            f"  Worst-case variation: {self.worst_case_variation:.6f}",
+            "",
+            f"  {'Rank':>4s}  {'Parameter':<45s}  {'Impact':>10s}  {'Impact%':>8s}  {'Failure Var':>12s}",
+            f"  {'----':>4s}  {'-'*45:<45s}  {'-'*10:>10s}  {'-'*8:>8s}  {'-'*12:>12s}",
+        ]
+        for item in self.items[:20]:
+            lines.append(
+                f"  {item.rank:4d}  {item.param_name:<45s}  "
+                f"{item.impact:10.6f}  {item.impact_percent:7.2f}%  "
+                f"{item.failure_variation:12.6f}"
+            )
+        return "\n".join(lines)
+
+
+def contingency_analysis(
+    sensitivity: list[tuple[str, float]],
+    tolerances: dict[str, float],
+    sigma: float = 3.0,
+    mode: str = "one_at_a_time",
+) -> ContingencyResult:
+    """Contingency (failure-mode) analysis for tolerance parameters.
+
+    Evaluates the impact on assembly variation when each tolerance parameter
+    independently goes to its worst case, while all other parameters remain
+    at their nominal statistical contribution.
+
+    This identifies which tolerances, if their manufacturing process drifts
+    or fails, will cause the most severe impact on assembly quality.
+
+    Modes:
+        "one_at_a_time": Each tolerance is set to its worst case (full range)
+            one at a time. This is the 3DCS-style contingency approach.
+        "dropped": Each tolerance is dropped from the stack (set to zero)
+            to see how much variation is reduced. Identifies which tolerances
+            contribute most to the baseline.
+
+    Args:
+        sensitivity: List of (param_name, sensitivity_value).
+        tolerances: Dict of param_name -> half_tolerance.
+        sigma: Sigma level for RSS calculation.
+        mode: Analysis mode ("one_at_a_time" or "dropped").
+
+    Returns:
+        ContingencyResult with ranked failure modes.
+    """
+    param_names = [name for name, _ in sensitivity]
+    sens_values = {name: abs(s) for name, s in sensitivity}
+
+    def rss_variation(tol_dict, override=None):
+        """Compute RSS variation, with optional overrides."""
+        total = 0.0
+        for name in param_names:
+            s = sens_values.get(name, 0.0)
+            t = tol_dict.get(name, 0.0)
+            if override and name in override:
+                t = override[name]
+            std_i = t / sigma
+            total += (s * std_i) ** 2
+        return sigma * np.sqrt(total)
+
+    baseline = rss_variation(tolerances)
+
+    # Worst case: all at max simultaneously
+    worst_case = sum(abs(sens_values.get(n, 0.0)) * tolerances.get(n, 0.0)
+                     for n in param_names)
+
+    items = []
+    for name in param_names:
+        s = sens_values.get(name, 0.0)
+        t = tolerances.get(name, 0.0)
+        if s < 1e-15 or t < 1e-15:
+            continue
+
+        if mode == "one_at_a_time":
+            # Set this parameter to worst case (full tolerance range instead of
+            # sigma-based), while others remain at statistical contribution
+            override = {name: t * sigma}  # worst case = full range
+            failure_var = rss_variation(tolerances, override)
+            failure_mode = f"{name} at worst case ({t * sigma:.6f})"
+        elif mode == "dropped":
+            # Remove this parameter to see how much variation drops
+            override = {name: 0.0}
+            failure_var = rss_variation(tolerances, override)
+            failure_mode = f"{name} removed from stack"
+        else:
+            raise ValueError(f"Unknown contingency mode: {mode!r}")
+
+        impact = abs(failure_var - baseline)
+        impact_pct = (impact / max(baseline, 1e-15)) * 100.0
+
+        items.append(ContingencyItem(
+            param_name=name,
+            baseline_variation=baseline,
+            failure_variation=failure_var,
+            impact=impact,
+            impact_percent=impact_pct,
+            failure_mode=failure_mode,
+        ))
+
+    # Sort by impact descending and assign ranks
+    items.sort(key=lambda x: x.impact, reverse=True)
+    for i, item in enumerate(items):
+        item.rank = i + 1
+
+    return ContingencyResult(
+        items=items,
+        baseline_variation=baseline,
+        worst_case_variation=worst_case,
+        method=mode,
+    )

@@ -242,23 +242,74 @@ def assembly_monte_carlo(
     n_samples: int = 100_000,
     seed: Optional[int] = None,
 ) -> AssemblyAnalysisResult:
-    """Monte Carlo assembly tolerance analysis."""
+    """Monte Carlo assembly tolerance analysis.
+
+    Supports actual-size MMC/LMC bonus tolerance: for parameters with
+    material_condition == MMC or LMC, the actual feature size is sampled
+    each iteration and the bonus tolerance (departure from the material
+    condition boundary) is added to the base geometric tolerance.
+    """
     rng = np.random.default_rng(seed)
     params = assembly.tolerance_parameters()
     nominal = assembly.compute_measurement()
 
+    from tolerance_stack.statistics import sample_distribution
+
     # Pre-generate all parameter samples
     param_samples = {}
+
+    # Identify MMC/LMC parameters and pre-sample actual feature sizes
+    mmc_lmc_info = {}  # param_name -> (mc_type, size_nom, tol_plus, tol_minus, base_half)
+    for p in params:
+        mc_type = p.get("material_condition", "none")
+        if mc_type in ("mmc", "lmc"):
+            bonus_max = p.get("bonus_max", 0.0)
+            if bonus_max > 0:
+                # Get the feature's size info from the assembly
+                body_name = p.get("body")
+                feat_name = p.get("feature")
+                if body_name and feat_name:
+                    bp = assembly.bodies.get(body_name)
+                    if bp:
+                        feat = bp.body.get_feature(feat_name)
+                        if feat and (feat.size_plus_tol + feat.size_minus_tol) > 0:
+                            mmc_lmc_info[p["name"]] = (
+                                mc_type,
+                                feat.size_nominal,
+                                feat.size_plus_tol,
+                                feat.size_minus_tol,
+                                p["half_tol"],
+                            )
+
+    # Sample actual sizes for features that need MMC/LMC bonus
+    actual_size_samples = {}
+    seen_features = set()
+    for pname, (mc_type, size_nom, tol_plus, tol_minus, _) in mmc_lmc_info.items():
+        # Extract body.feature key from param name to share size samples
+        # across x/y/z components of the same feature
+        parts = pname.split(".")
+        feat_key = f"{parts[0]}.{parts[1]}" if len(parts) >= 2 else pname
+        if feat_key not in seen_features:
+            seen_features.add(feat_key)
+            half_size_tol = (tol_plus + tol_minus) / 2.0
+            size_center = size_nom + (tol_plus - tol_minus) / 2.0
+            actual_size_samples[feat_key] = sample_distribution(
+                rng, Distribution.NORMAL, size_center, half_size_tol, 3.0, n_samples
+            )
+
     for p in params:
         half = p["half_tol"]
         center = p["nominal"]
         sigma = p["sigma"]
         dist = p["distribution"]
 
-        from tolerance_stack.statistics import sample_distribution
-        samples = sample_distribution(rng, dist, center, half, sigma, n_samples)
-
-        param_samples[p["name"]] = samples
+        if p["name"] in mmc_lmc_info:
+            # For MMC/LMC: sample at base tolerance first, then scale per-iteration
+            samples = sample_distribution(rng, dist, center, half, sigma, n_samples)
+            param_samples[p["name"]] = samples
+        else:
+            samples = sample_distribution(rng, dist, center, half, sigma, n_samples)
+            param_samples[p["name"]] = samples
 
     # Evaluate measurement for each sample
     measurements = np.zeros(n_samples)
@@ -271,6 +322,28 @@ def assembly_monte_carlo(
         for p in params:
             val = param_samples[p["name"]][s]
             source = p["source"]
+
+            # Apply MMC/LMC actual-size bonus scaling
+            if p["name"] in mmc_lmc_info:
+                mc_type, size_nom, tol_plus, tol_minus, base_half = mmc_lmc_info[p["name"]]
+                parts = p["name"].split(".")
+                feat_key = f"{parts[0]}.{parts[1]}" if len(parts) >= 2 else p["name"]
+                actual_size = actual_size_samples[feat_key][s]
+
+                if mc_type == "mmc":
+                    # MMC size = nominal - minus_tol (smallest for internal)
+                    mmc_size = size_nom - tol_minus
+                    departure = abs(actual_size - mmc_size)
+                else:  # lmc
+                    lmc_size = size_nom + tol_plus
+                    departure = abs(lmc_size - actual_size)
+
+                bonus = min(departure, tol_plus + tol_minus)
+                effective_half = base_half + bonus / 2.0
+
+                # Scale the sampled value to reflect the effective tolerance
+                if abs(base_half) > 1e-15:
+                    val = val * (effective_half / base_half)
 
             if source == "feature_position":
                 body = p["body"]

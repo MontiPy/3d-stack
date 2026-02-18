@@ -777,6 +777,7 @@ with tab_tools:
         "HLM Sensitivity", "Full Factorial DOE",
         "Latin Hypercube DOE", "Response Surface (RSM)",
         "Sobol' Sensitivity", "Tolerance Optimizer",
+        "GA Optimizer", "Contingency Analysis",
     ], horizontal=True, key="tool_mode")
 
     # --- HLM Sensitivity ---
@@ -1246,6 +1247,157 @@ with tab_tools:
             st.pyplot(fig_opt)
             plt.close(fig_opt)
 
+    # --- GA Optimizer ---
+    elif tool_mode == "GA Optimizer":
+        st.subheader("Genetic Algorithm Tolerance Optimizer")
+        st.markdown("Evolutionary optimization using tournament selection, crossover, and mutation to find optimal tolerance allocations.")
+
+        if "ga_params" not in st.session_state:
+            st.session_state["ga_params"] = []
+
+        with st.expander("Add a parameter", expanded=len(st.session_state["ga_params"]) == 0):
+            ga_name = st.text_input("Parameter name", key="ga_p_name")
+            ga_sens = st.number_input("Sensitivity", value=1.0, format="%.4f", key="ga_p_sens")
+            ga_tol = st.number_input("Current half-tolerance", value=0.1, min_value=0.001, format="%.4f", key="ga_p_tol")
+
+            if st.button("Add parameter", key="ga_add_p"):
+                st.session_state["ga_params"].append({
+                    "name": ga_name, "sensitivity": ga_sens, "tolerance": ga_tol,
+                })
+                st.rerun()
+
+        ga_params = st.session_state["ga_params"]
+        if ga_params:
+            for i, p in enumerate(ga_params):
+                pc, pd = st.columns([5, 1])
+                with pc:
+                    st.text(f"  {p['name']}: sens={p['sensitivity']}, tol={p['tolerance']}")
+                with pd:
+                    if st.button("X", key=f"ga_del_{i}"):
+                        st.session_state["ga_params"].pop(i)
+                        st.rerun()
+
+        ga_c1, ga_c2 = st.columns(2)
+        with ga_c1:
+            ga_target = st.number_input("Target variation (RSS)", value=0.05, min_value=0.001, format="%.4f", key="ga_target")
+            ga_pop = st.number_input("Population size", value=80, min_value=10, key="ga_pop")
+        with ga_c2:
+            ga_gen = st.number_input("Max generations", value=200, min_value=10, key="ga_gen")
+            ga_seed = st.number_input("Random seed", value=42, min_value=0, key="ga_seed")
+
+        if st.button("Run GA Optimizer", key="ga_run", type="primary", disabled=len(ga_params) < 1):
+            from tolerance_stack.optimizer import ga_optimize_tolerances, GAConfig
+
+            sens = [(p["name"], p["sensitivity"]) for p in ga_params]
+            tols = {p["name"]: p["tolerance"] for p in ga_params}
+
+            ga_config = GAConfig(population_size=int(ga_pop), n_generations=int(ga_gen))
+
+            result = ga_optimize_tolerances(
+                sens, tols,
+                target_variation=ga_target,
+                config=ga_config,
+                seed=int(ga_seed),
+            )
+            st.text(result.summary())
+
+            # Before/after chart
+            names_ga = sorted(result.original_tolerances.keys())
+            orig_vals = [result.original_tolerances[n] for n in names_ga]
+            opt_vals = [result.optimized_tolerances.get(n, result.original_tolerances[n]) for n in names_ga]
+
+            fig_ga, ax_ga = plt.subplots(figsize=(8, max(3, len(names_ga) * 0.5)))
+            y = np.arange(len(names_ga))
+            ax_ga.barh(y - 0.2, orig_vals, height=0.35, color="#BDBDBD", label="Original", edgecolor="black", linewidth=0.5)
+            ax_ga.barh(y + 0.2, opt_vals, height=0.35, color="#4CAF50", label="GA Optimized", edgecolor="black", linewidth=0.5)
+            ax_ga.set_yticks(y)
+            ax_ga.set_yticklabels(names_ga)
+            ax_ga.set_xlabel("Half-Tolerance")
+            ax_ga.set_title("GA Optimization Results")
+            ax_ga.legend()
+            ax_ga.invert_yaxis()
+            fig_ga.tight_layout()
+            st.pyplot(fig_ga)
+            plt.close(fig_ga)
+
+            # Fitness convergence chart
+            if result.fitness_history:
+                fig_conv, ax_conv = plt.subplots(figsize=(8, 3))
+                ax_conv.plot(result.fitness_history, color="#4CAF50", linewidth=1.5)
+                ax_conv.set_xlabel("Generation")
+                ax_conv.set_ylabel("Best Cost")
+                ax_conv.set_title("GA Convergence")
+                ax_conv.grid(True, alpha=0.3)
+                fig_conv.tight_layout()
+                st.pyplot(fig_conv)
+                plt.close(fig_conv)
+
+    # --- Contingency Analysis ---
+    elif tool_mode == "Contingency Analysis":
+        st.subheader("Contingency (Failure-Mode) Analysis")
+        st.markdown("Evaluates assembly quality impact when each tolerance independently goes to worst case or is removed.")
+
+        if "cont_params" not in st.session_state:
+            st.session_state["cont_params"] = []
+
+        with st.expander("Add a parameter", expanded=len(st.session_state["cont_params"]) == 0):
+            ct_name = st.text_input("Parameter name", key="cont_p_name")
+            ct_sens = st.number_input("Sensitivity", value=1.0, format="%.4f", key="cont_p_sens")
+            ct_tol = st.number_input("Half-tolerance", value=0.1, min_value=0.001, format="%.4f", key="cont_p_tol")
+
+            if st.button("Add parameter", key="cont_add_p"):
+                st.session_state["cont_params"].append({
+                    "name": ct_name, "sensitivity": ct_sens, "tolerance": ct_tol,
+                })
+                st.rerun()
+
+        cont_params = st.session_state["cont_params"]
+        if cont_params:
+            for i, p in enumerate(cont_params):
+                pc, pd = st.columns([5, 1])
+                with pc:
+                    st.text(f"  {p['name']}: sens={p['sensitivity']}, tol={p['tolerance']}")
+                with pd:
+                    if st.button("X", key=f"cont_del_{i}"):
+                        st.session_state["cont_params"].pop(i)
+                        st.rerun()
+
+        cont_mode = st.radio("Analysis mode", [
+            "One-at-a-time (worst case)",
+            "Dropped (parameter removed)",
+        ], key="cont_mode")
+
+        cont_sigma = st.number_input("Sigma level", value=3.0, min_value=1.0, max_value=6.0, step=0.5, format="%.1f", key="cont_sigma")
+
+        if st.button("Run Contingency Analysis", key="cont_run", type="primary", disabled=len(cont_params) < 1):
+            from tolerance_stack.optimizer import contingency_analysis
+
+            sens = [(p["name"], p["sensitivity"]) for p in cont_params]
+            tols = {p["name"]: p["tolerance"] for p in cont_params}
+
+            mode = "one_at_a_time" if "One-at-a-time" in cont_mode else "dropped"
+
+            result = contingency_analysis(sens, tols, sigma=cont_sigma, mode=mode)
+            st.text(result.summary())
+
+            # Impact chart
+            if result.items:
+                names_ct = [item.param_name for item in result.items[:15]]
+                impacts = [item.impact_percent for item in result.items[:15]]
+
+                fig_ct, ax_ct = plt.subplots(figsize=(8, max(3, len(names_ct) * 0.5)))
+                colors = ["#F44336" if imp > 20 else "#FF9800" if imp > 5 else "#4CAF50" for imp in impacts]
+                ax_ct.barh(range(len(names_ct)), impacts, color=colors,
+                           edgecolor="black", linewidth=0.5)
+                ax_ct.set_yticks(range(len(names_ct)))
+                ax_ct.set_yticklabels(names_ct)
+                ax_ct.set_xlabel("Impact (%)")
+                ax_ct.set_title(f"Contingency Analysis - {mode.replace('_', ' ').title()}")
+                ax_ct.invert_yaxis()
+                fig_ct.tight_layout()
+                st.pyplot(fig_ct)
+                plt.close(fig_ct)
+
 
 # ===================================================================
 # TAB 5: Reports
@@ -1453,7 +1605,9 @@ with st.sidebar:
     - STEP file import with PMI extraction
     - DOE: HLM, Full Factorial, Latin Hypercube, Response Surface (RSM)
     - Sobol' global sensitivity analysis
-    - Tolerance optimization with cost model
+    - Tolerance optimization: heuristic and genetic algorithm (GA)
+    - Contingency analysis (failure-mode ranking)
+    - Actual-size MMC/LMC bonus in Monte Carlo
     - APQP-compliant reporting (HTML, PDF, Text)
     - Gap, flush, and interference measurements
     """)

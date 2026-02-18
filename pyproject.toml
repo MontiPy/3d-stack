@@ -4,8 +4,8 @@ build-backend = "setuptools.backends._legacy:_Backend"
 
 [project]
 name = "tolerance-stack-3d"
-version = "0.5.0"
-description = "3D tolerance stack analysis with Worst-Case, RSS, and Monte Carlo methods. Full GD&T, DOE, Sobol' sensitivity, optimization, STEP import, 3D visualization, and APQP reporting."
+version = "0.6.0"
+description = "3D tolerance stack analysis with Worst-Case, RSS, and Monte Carlo methods. Full GD&T, DOE, Sobol' sensitivity, GA optimization, contingency analysis, STEP import, 3D visualization, and APQP reporting."
 requires-python = ">=3.9"
 dependencies = [
     "numpy>=1.24",

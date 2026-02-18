@@ -41,6 +41,8 @@ from tolerance_stack.optimizer import (
     hlm_sensitivity, full_factorial_doe,
     latin_hypercube_doe, response_surface_doe, sobol_sensitivity,
     DOEFactor, RSMResult, SobolResult,
+    ga_optimize_tolerances, GAConfig, GAResult,
+    contingency_analysis, ContingencyResult, ContingencyItem,
 )
 from tolerance_stack.assembly_process import (
     AssemblyProcess, AssemblyStation, Fixture, MoveOperation,
@@ -79,6 +81,8 @@ __all__ = [
     "hlm_sensitivity", "full_factorial_doe",
     "latin_hypercube_doe", "response_surface_doe", "sobol_sensitivity",
     "DOEFactor", "RSMResult", "SobolResult",
+    "ga_optimize_tolerances", "GAConfig", "GAResult",
+    "contingency_analysis", "ContingencyResult", "ContingencyItem",
     # Assembly Process
     "AssemblyProcess", "AssemblyStation", "Fixture", "MoveOperation",
     "compute_dof_status",
@@ -92,4 +96,4 @@ __all__ = [
     "visualize_assembly", "visualize_linkage", "visualize_sensitivity",
     "add_mc_cloud", "VisualizationConfig", "PLOTLY_AVAILABLE",
 ]
-__version__ = "0.5.0"
+__version__ = "0.6.0"

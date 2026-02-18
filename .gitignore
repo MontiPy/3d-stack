@@ -1,7 +1,53 @@
+# Python
 __pycache__/
 *.pyc
 *.pyo
+*.pyd
+*.so
+*.egg
 *.egg-info/
+.eggs/
+*.whl
+MANIFEST
+
+# Virtual environments
+venv/
+.venv/
+env/
+
+# Packaging / Build
 dist/
 build/
+
+# Testing / Coverage
 .pytest_cache/
+.coverage
+htmlcov/
+coverage.xml
+.tox/
+
+# Type checking / Linting
+.mypy_cache/
+.ruff_cache/
+.pytype/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Environment / Secrets
+.env
+.env.*
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Streamlit
+.streamlit/
